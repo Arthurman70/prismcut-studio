@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: System Qt/GL libs
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 ffmpeg
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: Offscreen smoke test (app boots)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PRISMCUT_DATA_DIR: /tmp/prismcut-ci
+        run: |
+          python - <<'PY'
+          from PySide6.QtWidgets import QApplication
+          from prismcut.ui.main_window import MainWindow
+          app = QApplication([])
+          win = MainWindow()
+          win.show()
+          print("panels OK:", bool(win.timeline and win.chat and win.photo and win.audio))
+          PY

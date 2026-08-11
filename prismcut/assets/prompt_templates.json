@@ -1,0 +1,32 @@
+{
+  "note": "Prompt Lab templates. {curly} placeholders become input fields. Tuning groups append comma-separated style tokens to the final prompt.",
+  "templates": [
+    { "name": "Cinematic photo", "kind": "image",
+      "text": "Cinematic photograph of {subject}, {environment}, shot on 35mm anamorphic lens, shallow depth of field, dramatic composition, photorealistic, highly detailed" },
+    { "name": "Studio portrait", "kind": "image",
+      "text": "Professional studio portrait of {subject}, three-point softbox lighting, seamless {backdrop_color} backdrop, 85mm lens, tack-sharp eyes, natural skin texture, editorial quality" },
+    { "name": "Product hero shot", "kind": "image",
+      "text": "Premium product photography of {product}, floating on a {surface} with soft reflections, dramatic rim lighting, minimalist composition, advertising quality, 8k detail" },
+    { "name": "Isometric icon", "kind": "image",
+      "text": "Isometric 3D icon of {subject}, soft studio lighting, pastel {color_scheme} palette, smooth rounded forms, subtle ambient occlusion, rendered in a clean stylized look, centered on plain background" },
+    { "name": "Epic landscape", "kind": "image",
+      "text": "Breathtaking landscape photograph of {location} at {time_of_day}, volumetric light, atmospheric haze, ultra-wide composition with strong foreground interest, National Geographic quality" },
+    { "name": "Drone establishing shot", "kind": "video",
+      "text": "Sweeping aerial drone shot flying over {location}, {time_of_day} light, smooth cinematic camera movement slowly revealing {reveal}, atmospheric depth, film grain" },
+    { "name": "Character action", "kind": "video",
+      "text": "{character} {action} in {environment}, dynamic tracking shot, dramatic lighting, motion blur on fast movement, cinematic color grade, coherent physics" },
+    { "name": "Timelapse", "kind": "video",
+      "text": "Timelapse of {subject} over {duration_description}, locked-off tripod framing, streaking clouds and light trails, smooth exposure ramping, crisp detail" },
+    { "name": "Macro detail", "kind": "video",
+      "text": "Extreme macro shot slowly pushing in on {subject}, razor-thin focus plane drifting across intricate surface detail, soft specular highlights, meditative pacing" },
+    { "name": "Music: mood track", "kind": "music",
+      "text": "{genre} track, {mood} mood, {tempo} tempo, featuring {instruments}, clean modern production, suitable as background music for a video about {topic}" }
+  ],
+  "tuning": {
+    "Lighting": ["golden hour glow", "soft overcast light", "dramatic chiaroscuro", "neon glow", "candlelit warmth", "harsh midday sun", "moonlit blue hour", "volumetric god rays"],
+    "Lens & Camera": ["85mm portrait lens", "ultra-wide 14mm", "anamorphic flare", "tilt-shift miniature", "macro close-up", "fisheye distortion", "shallow depth of field f/1.2", "long exposure"],
+    "Style": ["photorealistic", "cinematic still", "analog film grain", "editorial fashion", "documentary candid", "painterly", "hyper-detailed 8k", "minimalist"],
+    "Mood": ["serene and calm", "tense and moody", "joyful and vibrant", "melancholic", "epic and grand", "dreamlike surreal", "cozy intimate", "mysterious fog"],
+    "Color": ["teal and orange grade", "muted pastel palette", "rich jewel tones", "monochrome", "sepia vintage", "high-key bright whites", "low-key deep shadows", "kodachrome saturation"]
+  }
+}

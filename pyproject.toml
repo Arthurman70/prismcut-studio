@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prismcut-studio"
+version = "0.1.0"
+description = "Open-source AI photo, video & audio studio - bring your own API keys (Gemini/Nano Banana, Veo, Sora, Grok Imagine, MiniMax Hailuo, Seedance, FLUX, Stability, ElevenLabs and more)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "PrismCut contributors" }]
+keywords = ["ai", "video-editor", "photo-editor", "gemini", "nano-banana", "veo", "sora", "kdenlive"]
+dependencies = [
+    "PySide6>=6.6",
+    "requests>=2.31",
+    "Pillow>=10.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pyinstaller>=6.3"]
+
+[project.gui-scripts]
+prismcut = "prismcut.app:main"
+
+[tool.setuptools.packages.find]
+include = ["prismcut*"]
+
+[tool.setuptools.package-data]
+prismcut = ["assets/*.json", "assets/*.qss"]

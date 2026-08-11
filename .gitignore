@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.idea/
+.vscode/
+*.log
+packaging/icon.ico
+packaging/icon.png
+demo_media/
+.pytest_cache/

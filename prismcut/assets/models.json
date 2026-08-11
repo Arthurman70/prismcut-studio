@@ -1,0 +1,298 @@
+{
+  "version": 3,
+  "updated": "2026-08-11",
+  "note": "Model IDs move fast. Edit or add entries in-app via  AI > Model Manager  (stored in models.user.json) - no code changes needed.",
+  "providers": {
+    "google": {
+      "label": "Google AI (Gemini)",
+      "key_env": "GEMINI_API_KEY",
+      "key_url": "https://aistudio.google.com/apikey",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "doc_url": "https://ai.google.dev/gemini-api/docs",
+      "notes": "One key covers Gemini chat, Nano Banana image gen/edit, Veo video, TTS and transcription."
+    },
+    "openai": {
+      "label": "OpenAI",
+      "key_env": "OPENAI_API_KEY",
+      "key_url": "https://platform.openai.com/api-keys",
+      "base_url": "https://api.openai.com",
+      "doc_url": "https://developers.openai.com/api"
+    },
+    "anthropic": {
+      "label": "Anthropic Claude",
+      "key_env": "ANTHROPIC_API_KEY",
+      "key_url": "https://console.anthropic.com/settings/keys",
+      "base_url": "https://api.anthropic.com",
+      "doc_url": "https://docs.claude.com"
+    },
+    "xai": {
+      "label": "xAI (Grok)",
+      "key_env": "XAI_API_KEY",
+      "key_url": "https://console.x.ai",
+      "base_url": "https://api.x.ai",
+      "doc_url": "https://docs.x.ai"
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "key_env": "DEEPSEEK_API_KEY",
+      "key_url": "https://platform.deepseek.com/api_keys",
+      "base_url": "https://api.deepseek.com",
+      "doc_url": "https://api-docs.deepseek.com"
+    },
+    "minimax": {
+      "label": "MiniMax (Hailuo)",
+      "key_env": "MINIMAX_API_KEY",
+      "key_url": "https://platform.minimax.io",
+      "base_url": "https://api.minimax.io",
+      "doc_url": "https://platform.minimax.io/docs",
+      "notes": "Hailuo video (H3 = 'Hailuo 03'), music and speech. Mainland base: https://api.minimaxi.com"
+    },
+    "seedance": {
+      "label": "Seedance (BytePlus Ark)",
+      "key_env": "ARK_API_KEY",
+      "key_url": "https://console.byteplus.com/ark",
+      "base_url": "https://ark.ap-southeast.bytepluses.com/api/v3",
+      "doc_url": "https://docs.byteplus.com/en/docs/ModelArk",
+      "notes": "ByteDance Seedance video. Also available via fal.ai / Replicate with those keys."
+    },
+    "stability": {
+      "label": "Stability AI",
+      "key_env": "STABILITY_API_KEY",
+      "key_url": "https://platform.stability.ai/account/keys",
+      "base_url": "https://api.stability.ai",
+      "doc_url": "https://platform.stability.ai/docs"
+    },
+    "bfl": {
+      "label": "Black Forest Labs (FLUX)",
+      "key_env": "BFL_API_KEY",
+      "key_url": "https://dashboard.bfl.ai",
+      "base_url": "https://api.bfl.ai",
+      "doc_url": "https://docs.bfl.ai"
+    },
+    "fal": {
+      "label": "fal.ai (aggregator)",
+      "key_env": "FAL_KEY",
+      "key_url": "https://fal.ai/dashboard/keys",
+      "base_url": "https://fal.run",
+      "doc_url": "https://docs.fal.ai",
+      "notes": "One key -> hundreds of hosted models (Seedance, Kling, Hailuo, WAN, LTX, FLUX...). Add any fal model id in Model Manager."
+    },
+    "replicate": {
+      "label": "Replicate (aggregator)",
+      "key_env": "REPLICATE_API_TOKEN",
+      "key_url": "https://replicate.com/account/api-tokens",
+      "base_url": "https://api.replicate.com",
+      "doc_url": "https://replicate.com/docs"
+    },
+    "elevenlabs": {
+      "label": "ElevenLabs",
+      "key_env": "ELEVENLABS_API_KEY",
+      "key_url": "https://elevenlabs.io/app/settings/api-keys",
+      "base_url": "https://api.elevenlabs.io",
+      "doc_url": "https://elevenlabs.io/docs"
+    },
+    "suno": {
+      "label": "Suno (community gateway)",
+      "key_env": "SUNO_API_KEY",
+      "key_url": "https://sunoapi.org",
+      "base_url": "https://api.sunoapi.org",
+      "doc_url": "https://docs.sunoapi.org",
+      "notes": "EXPERIMENTAL: Suno has no self-serve official API; this speaks the common gateway protocol. Set your gateway's base URL in API Keys > advanced."
+    },
+    "custom": {
+      "label": "Custom (OpenAI-compatible)",
+      "key_env": "CUSTOM_OPENAI_API_KEY",
+      "key_url": "",
+      "base_url": "http://localhost:11434",
+      "doc_url": "",
+      "notes": "Any OpenAI-compatible server: OpenRouter, Groq, Together, Ollama, LM Studio, vLLM... Set base URL in API Keys > advanced, add model ids in Model Manager."
+    }
+  },
+  "models": [
+    { "id": "gemini-3.6-flash", "provider": "google", "label": "Gemini 3.6 Flash", "caps": ["chat", "transcribe"], "notes": "Fast multimodal chat; understands images, audio & video attachments." },
+    { "id": "gemini-3.1-pro-preview", "provider": "google", "label": "Gemini 3.1 Pro (preview)", "caps": ["chat", "transcribe"] },
+    { "id": "gemini-3.5-flash-lite", "provider": "google", "label": "Gemini 3.5 Flash-Lite", "caps": ["chat"] },
+    { "id": "gemini-3.1-flash-image", "provider": "google", "label": "Nano Banana 2 (Gemini 3.1 Flash Image)", "caps": ["image_generate", "image_edit"],
+      "params": [
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "2:3", "3:2"], "default": "1:1" },
+        { "name": "image_size", "label": "Size", "type": "choice", "choices": ["1K", "2K"], "default": "1K" }
+      ],
+      "notes": "The default one-click editor model for the Nano Tools panel." },
+    { "id": "gemini-3-pro-image", "provider": "google", "label": "Nano Banana Pro (Gemini 3 Pro Image)", "caps": ["image_generate", "image_edit"],
+      "params": [
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "2:3", "3:2"], "default": "1:1" },
+        { "name": "image_size", "label": "Size", "type": "choice", "choices": ["1K", "2K", "4K"], "default": "2K" }
+      ] },
+    { "id": "gemini-3.1-flash-lite-image", "provider": "google", "label": "Nano Banana 2 Lite", "caps": ["image_generate", "image_edit"],
+      "params": [ { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4"], "default": "1:1" } ] },
+    { "id": "veo-3.1-generate-preview", "provider": "google", "label": "Veo 3.1", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "int", "min": 4, "max": 8, "default": 8 },
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["16:9", "9:16"], "default": "16:9" },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["720p", "1080p"], "default": "1080p" },
+        { "name": "negative_prompt", "label": "Negative prompt", "type": "text", "default": "" },
+        { "name": "seed", "label": "Seed (-1 = random)", "type": "int", "min": -1, "max": 4294967295, "default": -1 }
+      ],
+      "notes": "Native audio generation; 4/6/8s clips." },
+    { "id": "veo-3.1-fast-generate-preview", "provider": "google", "label": "Veo 3.1 Fast", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "int", "min": 4, "max": 8, "default": 8 },
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["16:9", "9:16"], "default": "16:9" },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["720p", "1080p"], "default": "720p" }
+      ] },
+    { "id": "veo-3.1-lite-generate-preview", "provider": "google", "label": "Veo 3.1 Lite", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "int", "min": 4, "max": 8, "default": 8 },
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["16:9", "9:16"], "default": "16:9" }
+      ] },
+    { "id": "gemini-3.1-flash-tts-preview", "provider": "google", "label": "Gemini 3.1 Flash TTS", "caps": ["tts"],
+      "params": [ { "name": "voice", "label": "Voice", "type": "choice", "choices": ["Kore", "Puck", "Zephyr", "Charon", "Fenrir", "Aoede", "Leda", "Orus"], "default": "Kore" } ] },
+
+    { "id": "gpt-5.6-sol", "provider": "openai", "label": "GPT-5.6 Sol (flagship)", "caps": ["chat"] },
+    { "id": "gpt-5.6-terra", "provider": "openai", "label": "GPT-5.6 Terra", "caps": ["chat"] },
+    { "id": "gpt-5.6-luna", "provider": "openai", "label": "GPT-5.6 Luna (fast)", "caps": ["chat"] },
+    { "id": "gpt-image-2", "provider": "openai", "label": "GPT Image 2", "caps": ["image_generate", "image_edit"],
+      "params": [
+        { "name": "size", "label": "Size", "type": "choice", "choices": ["auto", "1024x1024", "1536x1024", "1024x1536"], "default": "auto" },
+        { "name": "quality", "label": "Quality", "type": "choice", "choices": ["auto", "low", "medium", "high"], "default": "auto" },
+        { "name": "n", "label": "Images", "type": "int", "min": 1, "max": 4, "default": 1 }
+      ] },
+    { "id": "gpt-image-1", "provider": "openai", "label": "GPT Image 1 (legacy)", "caps": ["image_generate", "image_edit"],
+      "params": [
+        { "name": "size", "label": "Size", "type": "choice", "choices": ["auto", "1024x1024", "1536x1024", "1024x1536"], "default": "auto" },
+        { "name": "n", "label": "Images", "type": "int", "min": 1, "max": 4, "default": 1 }
+      ] },
+    { "id": "sora-2", "provider": "openai", "label": "Sora 2", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "seconds", "label": "Duration (s)", "type": "choice", "choices": ["4", "8", "12"], "default": "8" },
+        { "name": "size", "label": "Size", "type": "choice", "choices": ["1280x720", "720x1280", "1792x1024", "1024x1792"], "default": "1280x720" }
+      ] },
+    { "id": "sora-2-pro", "provider": "openai", "label": "Sora 2 Pro", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "seconds", "label": "Duration (s)", "type": "choice", "choices": ["4", "8", "12"], "default": "8" },
+        { "name": "size", "label": "Size", "type": "choice", "choices": ["1280x720", "720x1280", "1792x1024", "1024x1792"], "default": "1280x720" }
+      ] },
+    { "id": "gpt-4o-mini-tts", "provider": "openai", "label": "GPT-4o mini TTS", "caps": ["tts"],
+      "params": [ { "name": "voice", "label": "Voice", "type": "choice", "choices": ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"], "default": "alloy" } ] },
+    { "id": "whisper-1", "provider": "openai", "label": "Whisper", "caps": ["transcribe"] },
+    { "id": "gpt-4o-transcribe", "provider": "openai", "label": "GPT-4o Transcribe", "caps": ["transcribe"] },
+
+    { "id": "claude-sonnet-5", "provider": "anthropic", "label": "Claude Sonnet 5", "caps": ["chat"] },
+    { "id": "claude-fable-5", "provider": "anthropic", "label": "Claude Fable 5", "caps": ["chat"] },
+    { "id": "claude-opus-4-8", "provider": "anthropic", "label": "Claude Opus 4.8", "caps": ["chat"] },
+
+    { "id": "grok-4.5", "provider": "xai", "label": "Grok 4.5", "caps": ["chat"] },
+    { "id": "grok-imagine-image-quality", "provider": "xai", "label": "Grok Imagine (image)", "caps": ["image_generate"],
+      "params": [ { "name": "n", "label": "Images", "type": "int", "min": 1, "max": 4, "default": 1 } ] },
+    { "id": "grok-imagine-video-1.5", "provider": "xai", "label": "Grok Imagine Video 1.5", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "int", "min": 1, "max": 15, "default": 6 },
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"], "default": "16:9" },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["480p", "720p", "1080p"], "default": "720p" }
+      ] },
+
+    { "id": "deepseek-chat", "provider": "deepseek", "label": "DeepSeek Chat (V3.x)", "caps": ["chat"] },
+    { "id": "deepseek-reasoner", "provider": "deepseek", "label": "DeepSeek Reasoner (R1)", "caps": ["chat"] },
+
+    { "id": "MiniMax-M2", "provider": "minimax", "label": "MiniMax M2 (chat)", "caps": ["chat"] },
+    { "id": "MiniMax-H3", "provider": "minimax", "label": "Hailuo 03 (MiniMax H3) - native 2K + audio", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "int", "min": 4, "max": 15, "default": 6 },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["2K", "768P"], "default": "2K" },
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"], "default": "16:9" }
+      ],
+      "notes": "The model behind 'Hailuo 3 / MiniMax HD 3'; 24fps stereo audio." },
+    { "id": "MiniMax-Hailuo-02", "provider": "minimax", "label": "Hailuo 02 (legacy)", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["6", "10"], "default": "6" },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["512P", "768P", "1080P"], "default": "768P" }
+      ] },
+    { "id": "music-1.5", "provider": "minimax", "label": "MiniMax Music 1.5", "caps": ["music"],
+      "params": [ { "name": "lyrics", "label": "Lyrics (blank = instrumental)", "type": "text", "default": "" } ] },
+    { "id": "speech-02-hd", "provider": "minimax", "label": "MiniMax Speech 02 HD", "caps": ["tts"],
+      "params": [ { "name": "voice", "label": "Voice id", "type": "choice", "choices": ["Wise_Woman", "Friendly_Person", "Deep_Voice_Man", "Calm_Woman", "Casual_Guy", "Lively_Girl", "Patient_Man", "Young_Knight"], "default": "Wise_Woman" } ] },
+
+    { "id": "dreamina-seedance-2-0-260128", "provider": "seedance", "label": "Seedance 2.0", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "int", "min": 4, "max": 15, "default": 5 },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["480p", "720p", "1080p"], "default": "720p" },
+        { "name": "aspect_ratio", "label": "Ratio", "type": "choice", "choices": ["16:9", "9:16", "1:1", "4:3", "21:9"], "default": "16:9" },
+        { "name": "generate_audio", "label": "Generate audio", "type": "bool", "default": true },
+        { "name": "seed", "label": "Seed (-1 = random)", "type": "int", "min": -1, "max": 4294967295, "default": -1 }
+      ] },
+    { "id": "seedance-1-0-pro-250528", "provider": "seedance", "label": "Seedance 1.0 Pro (legacy)", "caps": ["video_generate", "image_to_video"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["5", "10"], "default": "5" },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["480p", "720p", "1080p"], "default": "1080p" },
+        { "name": "aspect_ratio", "label": "Ratio", "type": "choice", "choices": ["16:9", "9:16", "1:1", "4:3"], "default": "16:9" }
+      ] },
+
+    { "id": "stable-image-ultra", "provider": "stability", "label": "Stable Image Ultra", "caps": ["image_generate"],
+      "params": [
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"], "default": "1:1" },
+        { "name": "negative_prompt", "label": "Negative prompt", "type": "text", "default": "" },
+        { "name": "seed", "label": "Seed (-1 = random)", "type": "int", "min": -1, "max": 4294967294, "default": -1 },
+        { "name": "style_preset", "label": "Style preset", "type": "choice", "choices": ["", "photographic", "cinematic", "analog-film", "anime", "comic-book", "digital-art", "fantasy-art", "line-art", "neon-punk", "origami", "3d-model", "pixel-art"], "default": "" }
+      ] },
+    { "id": "sd3.5-large", "provider": "stability", "label": "Stable Diffusion 3.5 Large", "caps": ["image_generate"],
+      "params": [
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "3:2", "2:3", "21:9"], "default": "1:1" },
+        { "name": "negative_prompt", "label": "Negative prompt", "type": "text", "default": "" },
+        { "name": "cfg_scale", "label": "CFG scale", "type": "float", "min": 1, "max": 10, "step": 0.5, "default": 4 },
+        { "name": "seed", "label": "Seed (-1 = random)", "type": "int", "min": -1, "max": 4294967294, "default": -1 }
+      ] },
+    { "id": "stability-inpaint", "provider": "stability", "label": "Stability Inpaint (mask edit)", "caps": ["image_edit"],
+      "params": [
+        { "name": "negative_prompt", "label": "Negative prompt", "type": "text", "default": "" },
+        { "name": "seed", "label": "Seed (-1 = random)", "type": "int", "min": -1, "max": 4294967294, "default": -1 }
+      ],
+      "notes": "True masked inpainting - paint a mask in Photo Studio first." },
+    { "id": "remove-background", "provider": "stability", "label": "Stability Remove Background", "caps": ["image_edit"] },
+    { "id": "upscale-fast", "provider": "stability", "label": "Stability Upscale 4x (fast)", "caps": ["image_edit"] },
+
+    { "id": "flux-2-pro", "provider": "bfl", "label": "FLUX 2 Pro", "caps": ["image_generate", "image_edit"],
+      "params": [
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"], "default": "1:1" },
+        { "name": "seed", "label": "Seed (-1 = random)", "type": "int", "min": -1, "max": 4294967295, "default": -1 }
+      ] },
+    { "id": "flux-kontext-pro", "provider": "bfl", "label": "FLUX Kontext Pro (edit)", "caps": ["image_edit", "image_generate"],
+      "params": [
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"], "default": "1:1" },
+        { "name": "seed", "label": "Seed (-1 = random)", "type": "int", "min": -1, "max": 4294967295, "default": -1 }
+      ] },
+    { "id": "flux-kontext-max", "provider": "bfl", "label": "FLUX Kontext Max (edit)", "caps": ["image_edit", "image_generate"] },
+
+    { "id": "fal-ai/bytedance/seedance/v1/pro/text-to-video", "provider": "fal", "label": "Seedance 1.0 Pro (via fal)", "caps": ["video_generate"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["5", "10"], "default": "5" },
+        { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["480p", "720p", "1080p"], "default": "1080p" }
+      ] },
+    { "id": "fal-ai/minimax/hailuo-02/pro/image-to-video", "provider": "fal", "label": "Hailuo 02 i2v (via fal)", "caps": ["image_to_video", "video_generate"] },
+    { "id": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video", "provider": "fal", "label": "Kling 2.5 Turbo Pro (via fal)", "caps": ["video_generate"],
+      "params": [ { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["5", "10"], "default": "5" } ] },
+    { "id": "fal-ai/flux-pro/v1.1-ultra", "provider": "fal", "label": "FLUX 1.1 Pro Ultra (via fal)", "caps": ["image_generate"],
+      "params": [ { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"], "default": "1:1" } ] },
+
+    { "id": "google/veo-3", "provider": "replicate", "label": "Veo 3 (via Replicate)", "caps": ["video_generate"] },
+    { "id": "black-forest-labs/flux-1.1-pro", "provider": "replicate", "label": "FLUX 1.1 Pro (via Replicate)", "caps": ["image_generate"] },
+    { "id": "minimax/music-01", "provider": "replicate", "label": "MiniMax Music (via Replicate)", "caps": ["music"] },
+
+    { "id": "eleven_v3", "provider": "elevenlabs", "label": "Eleven v3 (TTS)", "caps": ["tts"],
+      "params": [ { "name": "voice", "label": "Voice id (see docs/voices)", "type": "text", "default": "21m00Tcm4TlvDq8ikWAM" } ] },
+    { "id": "eleven_multilingual_v2", "provider": "elevenlabs", "label": "Eleven Multilingual v2 (TTS)", "caps": ["tts"],
+      "params": [ { "name": "voice", "label": "Voice id", "type": "text", "default": "21m00Tcm4TlvDq8ikWAM" } ] },
+    { "id": "eleven-music", "provider": "elevenlabs", "label": "Eleven Music", "caps": ["music"],
+      "params": [ { "name": "duration", "label": "Length (s)", "type": "int", "min": 10, "max": 300, "default": 60 } ] },
+    { "id": "eleven-sfx", "provider": "elevenlabs", "label": "Eleven Sound Effects", "caps": ["sfx"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "float", "min": 0.5, "max": 22, "step": 0.5, "default": 4 },
+        { "name": "prompt_influence", "label": "Prompt influence", "type": "float", "min": 0, "max": 1, "step": 0.05, "default": 0.3 }
+      ] },
+
+    { "id": "V5", "provider": "suno", "label": "Suno v5 (gateway)", "caps": ["music"],
+      "params": [
+        { "name": "instrumental", "label": "Instrumental", "type": "bool", "default": false },
+        { "name": "lyrics", "label": "Custom lyrics (optional)", "type": "text", "default": "" }
+      ] }
+  ]
+}
