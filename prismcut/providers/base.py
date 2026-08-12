@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..core import paths
+from ..core.captions import Segment
 from ..core.http import NotSupported, ProviderError
 from ..core.registry import ProviderSpec
 from .tools import Tool, ToolCall, ToolResult
@@ -127,6 +128,15 @@ class Adapter:
 
     def transcribe(self, model: str, audio) -> str:
         raise NotSupported(f"{self.spec.label} has no transcription support yet.")
+
+    def transcribe_segments(self, model: str, audio) -> list[Segment]:
+        """Timestamped transcription for SRT export - a separate method
+        from transcribe() rather than a richer return type there, since
+        most transcribe-capable models (Gemini's chat-based transcription,
+        gpt-4o-transcribe) have no segment/timestamp API to return, and
+        overloading transcribe()'s return type would force its two existing
+        plain-text callers to branch on str-vs-list for no benefit to them."""
+        raise NotSupported(f"{self.spec.label} has no per-segment (SRT) transcription support.")
 
     def test_key(self) -> tuple[bool, str]:
         try:

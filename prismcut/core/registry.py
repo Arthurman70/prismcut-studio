@@ -15,7 +15,7 @@ from typing import Optional
 from . import paths
 
 CAPS = ("chat", "image_generate", "image_edit", "video_generate", "image_to_video",
-        "tts", "music", "sfx", "transcribe", "lip_sync")
+        "tts", "music", "sfx", "transcribe", "transcribe_segments", "lip_sync")
 
 BUILTIN_PATH = Path(__file__).resolve().parent.parent / "assets" / "models.json"
 

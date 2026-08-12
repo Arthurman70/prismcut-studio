@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 from ..core import http
-from ..core.http import ProviderError
+from ..core.captions import Segment
+from ..core.http import NotSupported, ProviderError
 from .base import CancelFn, ProgressFn
 from .openai_compat import OpenAICompatChat
 
@@ -123,3 +124,19 @@ class OpenAI(OpenAICompatChat):
                                  headers=self._auth(), data={"model": model}, files=files,
                                  timeout=600)
         return data.get("text", "")
+
+    def transcribe_segments(self, model: str, audio) -> list[Segment]:
+        # gpt-4o-transcribe (also registered under the "transcribe" cap)
+        # doesn't support response_format=verbose_json/segment timestamps -
+        # only whisper-1 does, so this is model-gated rather than a blanket
+        # param addition to transcribe() above.
+        if model != "whisper-1":
+            raise NotSupported(
+                f"{model} doesn't return per-segment timestamps - use whisper-1 for SRT captions.")
+        files = {"file": (Path(audio).name, Path(audio).read_bytes(), http.guess_mime(audio))}
+        data = http.request_json("POST", self.base_url() + "/v1/audio/transcriptions",
+                                 headers=self._auth(),
+                                 data={"model": model, "response_format": "verbose_json"},
+                                 files=files, timeout=600)
+        return [Segment(float(s.get("start", 0.0)), float(s.get("end", 0.0)), str(s.get("text", "")))
+                for s in data.get("segments", [])]

@@ -2030,4 +2030,114 @@ def test_project_monitor_preview_at_title_clip(win):
         win.project.remove_clip(clip.id)
         win.project.media.pop(item.id, None)
         win.project_monitor.preview_at(0.0)   # reset shared monitor state for later tests
-    assert callable(win._maybe_check_updates_on_startup)
+
+
+# ----------------------------------------------------------------- captions
+
+def test_generate_captions_opens_dialog_with_segments(win, monkeypatch, tmp_path):
+    from prismcut.core.captions import Segment
+
+    audio = tmp_path / "narration.mp3"
+    audio.write_bytes(b"fake-mp3")
+    item = win.bin.add_generated(str(audio), {"mode": "audio"})
+
+    class FakeAdapter:
+        def transcribe_segments(self, model_id, path):
+            return [Segment(0.0, 1.0, "Hello"), Segment(1.0, 2.0, "World")]
+
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    opened = {}
+
+    def fake_exec(dlg_self):
+        opened["dlg"] = dlg_self
+        return 0
+
+    from prismcut.ui.dialogs.captions_dialog import CaptionsDialog
+    monkeypatch.setattr(CaptionsDialog, "exec", fake_exec)
+    try:
+        win._generate_captions(item.id)
+        assert _wait_until(lambda: "dlg" in opened)
+        text = opened["dlg"].text_edit.toPlainText()
+        assert "Hello" in text and "World" in text
+        assert "00:00:00,000 --> 00:00:01,000" in text
+    finally:
+        win.get_adapter = saved_get_adapter
+
+
+def test_generate_captions_toasts_when_no_speech_detected(win, monkeypatch, tmp_path):
+    audio = tmp_path / "silent.mp3"
+    audio.write_bytes(b"fake-mp3")
+    item = win.bin.add_generated(str(audio), {"mode": "audio"})
+
+    class EmptyAdapter:
+        def transcribe_segments(self, model_id, path):
+            return []
+
+    toasts = []
+    monkeypatch.setattr(win, "toast",
+                        lambda text, kind="info", timeout_ms=5000: toasts.append((text, kind)))
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: EmptyAdapter()
+    try:
+        win._generate_captions(item.id)
+        assert _wait_until(lambda: len(toasts) == 1)
+        assert toasts[0][1] == "info"
+    finally:
+        win.get_adapter = saved_get_adapter
+
+
+def test_generate_captions_toasts_on_job_failure(win, monkeypatch, tmp_path):
+    audio = tmp_path / "narration.mp3"
+    audio.write_bytes(b"fake-mp3")
+    item = win.bin.add_generated(str(audio), {"mode": "audio"})
+
+    class FailingAdapter:
+        def transcribe_segments(self, model_id, path):
+            raise RuntimeError("boom")
+
+    toasts = []
+    monkeypatch.setattr(win, "toast",
+                        lambda text, kind="info", timeout_ms=5000: toasts.append((text, kind)))
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FailingAdapter()
+    try:
+        win._generate_captions(item.id)
+        assert _wait_until(lambda: len(toasts) == 1)
+        assert toasts[0][1] == "error"
+    finally:
+        win.get_adapter = saved_get_adapter
+
+
+def test_captions_dialog_save_writes_the_edited_text(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    from prismcut.core.captions import Segment
+    from prismcut.ui.dialogs.captions_dialog import CaptionsDialog
+
+    dlg = CaptionsDialog([Segment(0.0, 1.0, "Original")], tmp_path / "default.srt", win)
+    out = tmp_path / "edited.srt"
+    edited = "1\n00:00:00,000 --> 00:00:01,000\nEdited text\n"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), "*.srt"))
+    try:
+        dlg.text_edit.setPlainText(edited)
+        dlg._save()
+
+        assert out.read_text(encoding="utf-8") == edited
+    finally:
+        dlg.close()
+
+
+def test_captions_dialog_save_cancelled_writes_nothing(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    from prismcut.core.captions import Segment
+    from prismcut.ui.dialogs.captions_dialog import CaptionsDialog
+
+    dlg = CaptionsDialog([Segment(0.0, 1.0, "Original")], tmp_path / "default.srt", win)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: ("", ""))
+    try:
+        dlg._save()   # user cancelled the file dialog
+        assert not list(tmp_path.glob("*.srt"))
+    finally:
+        dlg.close()

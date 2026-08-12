@@ -174,7 +174,7 @@
       ] },
     { "id": "gpt-4o-mini-tts", "provider": "openai", "label": "GPT-4o mini TTS", "caps": ["tts"],
       "params": [ { "name": "voice", "label": "Voice", "type": "choice", "choices": ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"], "default": "alloy" } ] },
-    { "id": "whisper-1", "provider": "openai", "label": "Whisper", "caps": ["transcribe"] },
+    { "id": "whisper-1", "provider": "openai", "label": "Whisper", "caps": ["transcribe", "transcribe_segments"] },
     { "id": "gpt-4o-transcribe", "provider": "openai", "label": "GPT-4o Transcribe", "caps": ["transcribe"] },
 
     { "id": "claude-sonnet-5", "provider": "anthropic", "label": "Claude Sonnet 5", "caps": ["chat"] },

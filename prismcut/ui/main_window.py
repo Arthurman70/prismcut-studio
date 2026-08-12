@@ -198,6 +198,7 @@ class MainWindow(QMainWindow):
         self.bin.sendToChat.connect(self._media_to_chat)
         self.bin.useAsReference.connect(self._media_to_reference)
         self.bin.transcribeRequested.connect(self._transcribe_media)
+        self.bin.captionsRequested.connect(self._generate_captions)
         # media removal cascades to clips (Project.remove_media) - keep the
         # timeline's visuals in sync rather than showing stale clip items
         self.bin.binChanged.connect(lambda: self.timeline.refresh())
@@ -401,6 +402,39 @@ class MainWindow(QMainWindow):
 
         self.jobs.submit(f"Transcribe {Path(path).name}", work, on_done=done,
                          on_fail=lambda m: self.toast(f"Transcribe failed: {m}", "error", 8000))
+
+    def _generate_captions(self, media_id: str):
+        item = self.project.media.get(media_id)
+        if not item:
+            return
+        models = self.registry.models_with("transcribe_segments")
+        model = next((m for m in models
+                      if self.settings.has_key(m.provider,
+                                               (self.registry.provider(m.provider) or
+                                                type("s", (), {"key_env": ""})).key_env)),
+                     models[0] if models else None)
+        if model is None:
+            self.toast("No caption-capable transcription model available (needs Whisper).",
+                       "error", 8000)
+            return
+        adapter = self.get_adapter(model.provider)
+        path = item.path
+
+        def work(job):
+            job.progress(-1, f"Generating captions for {Path(path).name}")
+            return adapter.transcribe_segments(model.id, path)
+
+        def done(segments):
+            if not segments:
+                self.toast("No speech detected - nothing to caption.", "info")
+                return
+            from .dialogs.captions_dialog import CaptionsDialog
+            dlg = CaptionsDialog(segments, Path(path).with_suffix(".srt"), self)
+            dlg.exec()
+
+        self.jobs.submit(f"Generate captions for {Path(path).name}", work, on_done=done,
+                         on_fail=lambda m: self.toast(f"Caption generation failed: {m}",
+                                                      "error", 8000))
 
     def _clip_selected(self, clip_id):
         self.effects.show_clip(clip_id)

@@ -26,6 +26,7 @@ class ProjectBin(QWidget):
     sendToChat = Signal(str)              # media_id
     useAsReference = Signal(str)          # media_id -> generate panel reference
     transcribeRequested = Signal(str)     # media_id (audio/video)
+    captionsRequested = Signal(str)       # media_id (audio/video) -> timestamped SRT captions
     binChanged = Signal()
     status = Signal(str)
 
@@ -264,6 +265,7 @@ class ProjectBin(QWidget):
             menu.addAction("💬 Send to AI chat", lambda: self.sendToChat.emit(mid))
         if item.kind in ("audio", "video"):
             menu.addAction("📝 Transcribe (AI)", lambda: self.transcribeRequested.emit(mid))
+            menu.addAction("🎬 Generate captions (SRT)…", lambda: self.captionsRequested.emit(mid))
         menu.addSeparator()
         menu.addAction("✎ Rename…", lambda: self._rename(item))
         if item.kind != "title":

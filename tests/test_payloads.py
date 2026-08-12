@@ -196,3 +196,45 @@ def test_every_provider_instantiates(registry, keychain):
     for name in registry.providers:
         adapter = make_adapter(name, keychain, registry)
         assert adapter.name == name
+
+
+def test_openai_transcribe_segments_uses_verbose_json(monkeypatch, registry, keychain, tmp_path):
+    captured = {}
+    audio = tmp_path / "narration.mp3"
+    audio.write_bytes(b"fake-mp3")
+
+    def fake_request_json(method, url, **kw):
+        captured.update(url=url, **kw)
+        return {"text": "hello world", "segments": [
+            {"start": 0.0, "end": 1.5, "text": "hello"},
+            {"start": 1.5, "end": 3.0, "text": " world"},
+        ]}
+
+    monkeypatch.setattr(http, "request_json", fake_request_json)
+    adapter = make_adapter("openai", keychain, registry)
+    segments = adapter.transcribe_segments("whisper-1", str(audio))
+
+    assert captured["url"].endswith("/v1/audio/transcriptions")
+    assert captured["data"]["response_format"] == "verbose_json"
+    assert captured["data"]["model"] == "whisper-1"
+    assert len(segments) == 2
+    assert segments[0].start == 0.0 and segments[0].end == 1.5 and segments[0].text == "hello"
+    assert segments[1].text == " world"
+
+
+def test_openai_transcribe_segments_rejects_non_whisper_models(registry, keychain, tmp_path):
+    audio = tmp_path / "narration.mp3"
+    audio.write_bytes(b"fake-mp3")
+    adapter = make_adapter("openai", keychain, registry)
+
+    with pytest.raises(http.NotSupported):
+        adapter.transcribe_segments("gpt-4o-transcribe", str(audio))
+
+
+def test_google_transcribe_segments_is_not_supported(registry, keychain, tmp_path):
+    audio = tmp_path / "narration.mp3"
+    audio.write_bytes(b"fake-mp3")
+    adapter = make_adapter("google", keychain, registry)
+
+    with pytest.raises(http.NotSupported):
+        adapter.transcribe_segments("gemini-3.6-flash", str(audio))
