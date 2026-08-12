@@ -160,59 +160,65 @@ def test_download_installer_downloads_to_cache_dir(monkeypatch, tmp_path):
     assert calls[0][0] == "https://example.test/setup.exe"
 
 
-def test_run_silent_install_raises_on_nonzero_exit(monkeypatch, tmp_path):
+def test_launch_installer_detached_uses_verysilent_and_norestart(monkeypatch, tmp_path):
     fake_installer = tmp_path / "Setup.exe"
     fake_installer.write_bytes(b"")
-
-    class FakeResult:
-        returncode = 1
-        stdout = b""
-        stderr = b"install failed"
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeResult())
-
-    with pytest.raises(RuntimeError, match="install failed"):
-        updater.run_silent_install(fake_installer)
-
-
-def test_run_silent_install_succeeds_on_zero_exit(monkeypatch, tmp_path):
-    fake_installer = tmp_path / "Setup.exe"
-    fake_installer.write_bytes(b"")
-
-    class FakeResult:
-        returncode = 0
-        stdout = b""
-        stderr = b""
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeResult())
-
-    updater.run_silent_install(fake_installer)   # must not raise
-
-
-def test_relaunch_from_returns_false_when_exe_missing(tmp_path):
-    assert updater.relaunch_from(tmp_path, "NoSuchApp.exe") is False
-
-
-def test_relaunch_from_launches_when_exe_present(monkeypatch, tmp_path):
-    exe = tmp_path / "PrismCut.exe"
-    exe.write_bytes(b"")
     calls = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
 
-    assert updater.relaunch_from(tmp_path, "PrismCut.exe") is True
+    updater.launch_installer_detached(fake_installer)
+
     assert len(calls) == 1
+    args, _kwargs = calls[0]
+    cmd = args[0]
+    assert cmd[0] == str(fake_installer)
+    assert "/VERYSILENT" in cmd
+    assert "/NORESTART" in cmd
 
 
-def test_perform_self_update_raises_a_clear_error_if_relaunch_target_is_missing(
-        monkeypatch, tmp_path):
-    """download + install succeed, but the exe isn't where expected afterward
-    (e.g. an installer that changed its layout) - must fail loudly, not
-    silently leave the user thinking the update finished."""
+def test_launch_installer_detached_does_not_wait_for_the_process(monkeypatch, tmp_path):
+    """The actual fix: this must return immediately and never block on the
+    installer's exit code, which can't arrive until after this app has
+    already exited (the installer is stuck behind our own file lock on
+    PrismCut.exe/DLLs until then) - the old blocking subprocess.run() was
+    exactly the "files are being used by app currently" bug."""
+    fake_installer = tmp_path / "Setup.exe"
+    fake_installer.write_bytes(b"")
+
+    class FakePopen:
+        def __init__(self, *a, **k):
+            pass
+
+        def wait(self, *a, **k):
+            raise AssertionError("launch_installer_detached must not wait() on the process")
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    updater.launch_installer_detached(fake_installer)   # returns without calling .wait()
+
+
+def test_launch_installer_detached_passes_detached_process_flag_on_windows(monkeypatch, tmp_path):
+    if not sys.platform.startswith("win"):
+        pytest.skip("Windows-only flag")
+    fake_installer = tmp_path / "Setup.exe"
+    fake_installer.write_bytes(b"")
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
+
+    updater.launch_installer_detached(fake_installer)
+
+    _args, kwargs = calls[0]
+    assert kwargs.get("creationflags") == subprocess.DETACHED_PROCESS
+
+
+def test_perform_self_update_downloads_then_launches_detached(monkeypatch, tmp_path):
     release = updater.ReleaseInfo(tag="v1", name="v1", notes="", html_url="",
                                   asset_url="https://example.test/setup.exe",
                                   asset_name="Setup.exe")
+    launched = []
     monkeypatch.setattr(updater, "download_installer", lambda *a, **k: tmp_path / "Setup.exe")
-    monkeypatch.setattr(updater, "run_silent_install", lambda *a, **k: None)
+    monkeypatch.setattr(updater, "launch_installer_detached", lambda p: launched.append(p))
 
-    empty_install_dir = tmp_path / "empty"
-    empty_install_dir.mkdir()
-    with pytest.raises(RuntimeError, match="wasn't found"):
-        updater.perform_self_update(release, empty_install_dir)
+    result = updater.perform_self_update(release)
+
+    assert result == tmp_path / "Setup.exe"
+    assert launched == [tmp_path / "Setup.exe"]

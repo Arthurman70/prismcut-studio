@@ -25,6 +25,16 @@ AppUpdatesURL={#MyAppURL}/releases
 ; Per-user install, no admin/UAC prompt required (same pattern as VS Code's
 ; "User Installer" and most modern desktop-app installers).
 PrivilegesRequired=lowest
+; The auto-updater launches this installer while PrismCut.exe is still
+; running (it can't replace its own locked .exe/DLLs otherwise - see
+; core.updater.perform_self_update) - CloseApplications uses Windows
+; Restart Manager to detect processes holding a lock on files being
+; installed and close them gracefully, RestartApplications relaunches
+; them afterward. Works silently under /VERYSILENT, and as a safety net
+; also covers a user just double-clicking the installer by hand while the
+; app happens to be open.
+CloseApplications=yes
+RestartApplications=yes
 DefaultDirName={localappdata}\Programs\PrismCut Studio
 DefaultGroupName=PrismCut Studio
 DisableProgramGroupPage=yes
@@ -58,4 +68,8 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; No skipifsilent: the auto-updater relies on THIS entry to relaunch the
+; app after a /VERYSILENT install (it can't do so itself - see
+; core.updater.launch_installer_detached's docstring for why), so it must
+; still fire under silent installs, not just interactive ones.
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall

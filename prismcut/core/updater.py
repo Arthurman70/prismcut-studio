@@ -1,9 +1,16 @@
 """Self-updater: checks GitHub Releases for a newer tag, and for copies
 installed via the Inno Setup installer (packaging/installer.iss), can
-silently download + install + relaunch. Portable-zip and from-source runs
-are detected by the same single check (no matching registry entry) and just
-get a "here's the download, go grab it" experience instead - see
-installed_location().
+silently download and hand off to the installer. Portable-zip and
+from-source runs are detected by the same single check (no matching
+registry entry) and just get a "here's the download, go grab it"
+experience instead - see installed_location().
+
+The installer can't overwrite this process's own running .exe/DLLs while
+we're still alive to hold Windows' lock on them, so perform_self_update()
+only downloads and launches the installer detached - it's the CALLER's job
+to close this app immediately afterward (see launch_installer_detached's
+docstring), and packaging/installer.iss's own [Run] postinstall entry that
+relaunches the app once install actually completes.
 
 Qt-free plain functions by design (same style as core/pipeline.py) - a
 version check or a download is "just another job", submitted through
@@ -33,7 +40,6 @@ CHECK_INTERVAL_SECS = 24 * 3600
 # comment there explains why), so it's safe to hardcode as the fingerprint
 # for "is this machine's copy the one that installer manages."
 INSTALLER_APP_ID = "BC2968F4-DE79-4830-898D-0813B11BA474"
-DEFAULT_EXE_NAME = "PrismCut.exe"
 
 
 def _version_tuple(v: str) -> tuple:
@@ -124,31 +130,40 @@ def download_installer(release: ReleaseInfo,
     return http.download(release.asset_url, dest, on_chunk=on_chunk)
 
 
-def run_silent_install(installer_path: Path) -> None:
-    result = subprocess.run([str(installer_path), "/VERYSILENT", "/NORESTART"],
-                            capture_output=True, timeout=300)
-    if result.returncode != 0:
-        raise RuntimeError(f"Installer exited with code {result.returncode}: "
-                           f"{(result.stderr or result.stdout or b'').decode(errors='replace')[:300]}")
+def launch_installer_detached(installer_path: Path) -> None:
+    """Launches the downloaded installer and returns immediately WITHOUT
+    waiting for it to finish.
+
+    This used to be a blocking subprocess.run() that waited for the
+    installer's exit code before relaunching the app itself - which can
+    never work: the installer needs to overwrite THIS process's own running
+    .exe and DLLs, and Windows holds those files locked for as long as this
+    process is alive. Blocking here just means the installer sits there
+    failing (or erroring on the locked files) while we wait for an exit
+    code that can't arrive until after we've already exited - exactly the
+    "files are being used by app currently" failure this fixes.
+
+    The correct order is: launch the installer detached (it survives our
+    exit), return control to the caller so it can close this app right
+    away, and let packaging/installer.iss's own [Run] postinstall entry
+    (CloseApplications/RestartApplications, plus no skipifsilent) handle
+    relaunching once install actually completes - this process is gone by
+    then and can't do it itself."""
+    kwargs = {}
+    if sys.platform.startswith("win"):
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS
+    subprocess.Popen([str(installer_path), "/VERYSILENT", "/NORESTART"],
+                     close_fds=True, **kwargs)
 
 
-def relaunch_from(install_dir: Path, exe_name: str = DEFAULT_EXE_NAME) -> bool:
-    exe = Path(install_dir) / exe_name
-    if not exe.exists():
-        return False
-    subprocess.Popen([str(exe)], cwd=str(install_dir), close_fds=True)
-    return True
-
-
-def perform_self_update(release: ReleaseInfo, install_dir: Path,
-                        on_chunk: Optional[Callable[[int, int], None]] = None,
-                        exe_name: str = DEFAULT_EXE_NAME) -> None:
-    """Download -> silent install -> relaunch, all blocking - meant to run
-    entirely inside a background job's fn(job). The caller is responsible
-    for quitting the CURRENT process once this returns without raising
-    (must happen back on the GUI thread via the job's on_done, not here)."""
+def perform_self_update(release: ReleaseInfo,
+                        on_chunk: Optional[Callable[[int, int], None]] = None) -> Path:
+    """Downloads the installer and launches it (detached), then returns -
+    meant to run inside a background job's fn(job). The caller MUST close
+    this app immediately once this returns without raising (see
+    launch_installer_detached's docstring for why: the installer is already
+    running but blocked on our own file lock, and can't proceed until we
+    exit). Returns the installer path, mainly for tests/logging."""
     installer_path = download_installer(release, on_chunk=on_chunk)
-    run_silent_install(installer_path)
-    if not relaunch_from(install_dir, exe_name):
-        raise RuntimeError(f"Update installed, but {exe_name} wasn't found in {install_dir} "
-                           "to relaunch - please start PrismCut Studio manually.")
+    launch_installer_detached(installer_path)
+    return installer_path

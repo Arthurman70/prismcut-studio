@@ -109,15 +109,20 @@ class UpdateDialog(QDialog):
             return
         self._maybe_skip()
         self._busy("Downloading update…")
-        release, install_dir = self.release, self.install_dir
+        release = self.release
 
         def work(job):
             def on_chunk(written, total):
                 job.progress(int(written * 100 / total) if total else -1, "Downloading update…")
-            updater.perform_self_update(release, install_dir, on_chunk=on_chunk)
+            updater.perform_self_update(release, on_chunk=on_chunk)
 
         def done(_result):
-            self.status_label.setText("Update installed — restarting…")
+            # The installer is already running at this point, but it can't
+            # actually replace this process's own locked .exe/DLLs until we
+            # exit - closing right away is what lets it finish (see
+            # core.updater.perform_self_update's docstring). Its own [Run]
+            # postinstall entry relaunches the app once install completes.
+            self.status_label.setText("Closing so the update can finish installing…")
             self.accept()   # end this modal dialog's own event loop first
             if win is not None:
                 # Deferred one tick so it runs after this dialog has actually
