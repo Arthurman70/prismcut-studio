@@ -2585,6 +2585,131 @@ def test_project_bin_refresh_shows_color_label_square(win):
         win.bin.refresh()
 
 
+def test_project_bin_refresh_shows_offline_banner(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.offline = True
+    try:
+        win.bin.refresh()
+
+        assert win.bin.offline_banner.isVisible()
+        assert "1 file" in win.bin.offline_banner.text()
+    finally:
+        win.project.remove_media(img.id)
+        win.bin.refresh()
+
+
+def test_project_bin_refresh_hides_offline_banner_when_nothing_missing(win):
+    win.bin.refresh()
+    assert not win.bin.offline_banner.isVisible()
+
+
+def test_project_bin_refresh_marks_offline_item_in_tree(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.offline = True
+    try:
+        win.bin.refresh()
+
+        node = _select_media_node(win, img.id)
+        assert node.text(0).startswith("⚠️")
+        assert "not found" in node.toolTip(0)
+    finally:
+        win.project.remove_media(img.id)
+        win.bin.refresh()
+
+
+def test_project_bin_relink_is_undoable(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.offline = True
+    old_path = img.path
+    replacement = tmp_path / "found.png"
+    replacement.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(replacement), ""))
+    try:
+        win.bin._relink(img)
+
+        assert img.path == str(replacement)
+        assert img.offline is False
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert img.path == old_path
+        assert img.offline is True
+    finally:
+        win.project.remove_media(img.id)
+        win.bin.refresh()
+
+
+def test_project_bin_relink_cancelled_does_nothing(win, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.offline = True
+    old_path = img.path
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: ("", ""))
+    try:
+        win.bin._relink(img)
+        assert img.path == old_path
+        assert img.offline is True
+    finally:
+        win.project.remove_media(img.id)
+
+
+def test_project_bin_relink_all_dialog_relinks_matches_in_one_macro(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    src = tmp_path / "clip.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = win.project.add_media(src)
+    img.kind = "image"
+    src.unlink()
+    win.project.check_offline()
+    assert img.offline is True
+
+    found_dir = tmp_path / "found"
+    found_dir.mkdir()
+    replacement = found_dir / "clip.png"
+    replacement.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(found_dir))
+    try:
+        win.bin._relink_all_dialog()
+
+        assert img.offline is False
+        assert img.path == str(replacement)
+
+        win.undo_stack.undo()   # one Ctrl+Z undoes the whole batch
+        assert img.offline is True
+        assert img.path == str(src)
+    finally:
+        win.project.remove_media(img.id)
+        win.bin.refresh()
+
+
+def test_project_bin_relink_all_dialog_no_matches_emits_status(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.offline = True
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(empty_dir))
+    statuses = []
+    win.bin.status.connect(statuses.append)
+    try:
+        win.bin._relink_all_dialog()
+        assert img.offline is True   # nothing matched, nothing changed
+        assert any("No matching" in s for s in statuses)
+    finally:
+        win.bin.status.disconnect(statuses.append)
+        win.project.remove_media(img.id)
+
+
 def test_monitor_show_title_renders_without_crashing(win):
     win.clip_monitor.show_title({
         "title_text": "Preview", "font_size": 64, "color": "#ffffff",

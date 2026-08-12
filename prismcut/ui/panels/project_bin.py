@@ -65,6 +65,15 @@ class ProjectBin(QWidget):
         btns.addWidget(rm)
         lay.addLayout(btns)
 
+        self.offline_banner = QPushButton("")
+        self.offline_banner.setStyleSheet(
+            "text-align:left; padding:6px; font-weight:bold; background:#4a2f1a; "
+            "color:#ffb74d; border:1px solid #ffb74d; border-radius:3px;")
+        self.offline_banner.setToolTip("Click to browse a folder and auto-relink by filename")
+        self.offline_banner.clicked.connect(self._relink_all_dialog)
+        self.offline_banner.hide()
+        lay.addWidget(self.offline_banner)
+
         self.search = QLineEdit()
         self.search.setPlaceholderText("🔍 Filter media…")
         self.search.setClearButtonEnabled(True)
@@ -105,6 +114,13 @@ class ProjectBin(QWidget):
 
     def refresh(self):
         self.tree.clear()
+        offline_count = sum(1 for m in self.project.media.values() if m.offline)
+        if offline_count:
+            plural = "s" if offline_count != 1 else ""
+            self.offline_banner.setText(f"⚠️ {offline_count} file{plural} missing — click to relink…")
+            self.offline_banner.show()
+        else:
+            self.offline_banner.hide()
         if not self.project.media:
             empty = QTreeWidgetItem(["📥  Drag files here, or click “＋ Import media” to get started"])
             empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
@@ -125,17 +141,19 @@ class ProjectBin(QWidget):
             self.tree.addTopLevelItem(root)
         for item in sorted(self.project.media.values(), key=lambda m: m.label.lower()):
             color_sq = next((sq for _n, hexval, sq in LABEL_COLORS if hexval == item.label_color), "")
-            color_prefix = f"{color_sq} " if color_sq else ""
-            node = QTreeWidgetItem([color_prefix + self._label_for(item)])
+            prefix = ("⚠️ " if item.offline else "") + (f"{color_sq} " if color_sq else "")
+            node = QTreeWidgetItem([prefix + self._label_for(item)])
             node.setData(0, Qt.ItemDataRole.UserRole, item.id)
-            thumb = None if item.kind == "title" else media_utils.thumbnail(item.path)
+            thumb = None if item.kind == "title" or item.offline else media_utils.thumbnail(item.path)
             if thumb:
                 node.setIcon(0, QIcon(QPixmap(str(thumb))))
             else:
                 kind_prefix = {"image": "🖼 ", "video": "🎬 ", "audio": "🎵 ", "title": "🔤 "} \
                     .get(item.kind, "📄 ")
-                node.setText(0, color_prefix + kind_prefix + self._label_for(item))
-            if item.kind == "title":
+                node.setText(0, prefix + kind_prefix + self._label_for(item))
+            if item.offline:
+                node.setToolTip(0, f"⚠️ File not found:\n{item.path}")
+            elif item.kind == "title":
                 node.setToolTip(0, item.meta.get("title_text", item.label))
             else:
                 node.setToolTip(0, item.path + (f"\n{item.meta.get('prompt', '')}" if item.meta else ""))
@@ -288,6 +306,9 @@ class ProjectBin(QWidget):
         if not item:
             return
         menu = QMenu(self)
+        if item.offline:
+            menu.addAction("🔗 Relink…", lambda: self._relink(item))
+            menu.addSeparator()
         menu.addAction("▶ Preview in monitor", lambda: self.mediaActivated.emit(mid))
         menu.addAction("➕ Add to timeline at playhead", lambda: self.addToTimeline.emit(mid))
         if item.kind == "image":
@@ -404,6 +425,40 @@ class ProjectBin(QWidget):
             remove=lambda: setattr(self.project, "bins", [x for x in self.project.bins if x.id != b.id]),
             refresh=self._undo_refresh))
         self.undo_stack.endMacro()
+
+    def _apply_relink(self, item: MediaItem, new_path) -> None:
+        """Shared by the single-item and folder-wide relink flows - always
+        re-probes the replacement file rather than keeping the original's
+        stale metadata, since the point of relinking is that this file is
+        now the canonical source."""
+        info = media_utils.probe(Path(new_path))
+        before = {"path": item.path, "duration": item.duration, "width": item.width,
+                 "height": item.height, "has_audio": item.has_audio, "offline": item.offline}
+        after = {"path": str(new_path), "duration": info["duration"], "width": info["width"],
+                "height": info["height"], "has_audio": info["has_audio"], "offline": False}
+        self.undo_stack.push(ChangePropertiesCommand(
+            f"Relink {item.label or 'media'}", item, before, after, self._undo_refresh))
+
+    def _relink(self, item: MediaItem):
+        f, _ = QFileDialog.getOpenFileName(self, "Relink media", "", media_utils.MEDIA_FILTER)
+        if f:
+            self._apply_relink(item, Path(f))
+
+    def _relink_all_dialog(self):
+        folder = QFileDialog.getExistingDirectory(self, "Relink from folder")
+        if not folder:
+            return
+        matches = self.project.find_relink_matches(folder)
+        if not matches:
+            self.status.emit("No matching filenames found in that folder.")
+            return
+        self.undo_stack.beginMacro(f"Relink {len(matches)} file(s)")
+        for mid, path in matches.items():
+            item = self.project.media.get(mid)
+            if item:
+                self._apply_relink(item, path)
+        self.undo_stack.endMacro()
+        self.status.emit(f"Relinked {len(matches)} file(s).")
 
     def _rename(self, item: MediaItem):
         from PySide6.QtWidgets import QInputDialog

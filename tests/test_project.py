@@ -1,6 +1,8 @@
 """Project data model tests - Qt-free, no real ffmpeg/ffprobe required (media
 extraction is monkeypatched, same spirit as test_render.py never actually
 invoking ffmpeg)."""
+from pathlib import Path
+
 from prismcut.core.project import Project
 
 
@@ -467,3 +469,112 @@ def test_media_item_bin_id_and_label_color_round_trip(tmp_path):
     assert loaded.media[item.id].label_color == "#ef5350"
     assert len(loaded.bins) == 1
     assert loaded.bins[0].name == "Interviews"
+
+
+def test_check_offline_flags_missing_files(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    assert item.offline is False
+
+    Path(item.path).unlink()
+    count = p.check_offline()
+
+    assert count == 1
+    assert item.offline is True
+
+
+def test_check_offline_never_flags_titles():
+    p = Project()
+    p.add_title("Card")   # its "path" is a synthetic id, never a real file
+
+    count = p.check_offline()
+
+    assert count == 0
+    assert list(p.media.values())[0].offline is False
+
+
+def test_check_offline_does_not_mark_project_dirty(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    Path(item.path).unlink()
+    p.dirty = False
+
+    p.check_offline()
+
+    assert p.dirty is False
+
+
+def test_project_load_recomputes_offline_status(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    path = tmp_path / "proj.pcut"
+    p.save(path)
+
+    Path(item.path).unlink()   # goes missing only after the project was saved
+    loaded = Project.load(path)
+
+    assert loaded.media[item.id].offline is True
+
+
+def test_find_relink_matches_finds_same_filename_in_folder(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)   # tmp_path/a.png
+    Path(item.path).unlink()
+    p.check_offline()
+
+    found_dir = tmp_path / "found"
+    found_dir.mkdir()
+    replacement = found_dir / "a.png"
+    replacement.write_bytes(b"\x89PNG")
+
+    matches = p.find_relink_matches(found_dir)
+
+    assert matches == {item.id: replacement}
+
+
+def test_find_relink_matches_searches_recursively(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    Path(item.path).unlink()
+    p.check_offline()
+
+    nested = tmp_path / "found" / "nested" / "deeper"
+    nested.mkdir(parents=True)
+    replacement = nested / "a.png"
+    replacement.write_bytes(b"\x89PNG")
+
+    matches = p.find_relink_matches(tmp_path / "found")
+
+    assert matches == {item.id: replacement}
+
+
+def test_find_relink_matches_skips_items_that_are_not_offline(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)   # still exists - not offline
+    found_dir = tmp_path / "found"
+    found_dir.mkdir()
+    (found_dir / "a.png").write_bytes(b"\x89PNG")
+
+    assert p.find_relink_matches(found_dir) == {}
+
+
+def test_find_relink_matches_returns_empty_for_no_matches(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    Path(item.path).unlink()
+    p.check_offline()
+
+    found_dir = tmp_path / "found"
+    found_dir.mkdir()
+    (found_dir / "unrelated.png").write_bytes(b"\x89PNG")
+
+    assert p.find_relink_matches(found_dir) == {}
+
+
+def test_find_relink_matches_handles_nonexistent_folder(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    Path(item.path).unlink()
+    p.check_offline()
+
+    assert p.find_relink_matches(tmp_path / "does-not-exist") == {}

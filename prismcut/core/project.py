@@ -34,6 +34,12 @@ class MediaItem:
     # the bin panel checks first and falls back from.
     bin_id: str = ""
     label_color: str = ""           # "" = none, else a hex color from a fixed palette
+    # Whether `path` currently points at a file that exists - a live,
+    # recomputed-on-load status flag, not something meaningful to persist
+    # (see Project.check_offline()); round-trips through save/load
+    # harmlessly since load() immediately overwrites it with a fresh check
+    # regardless of whatever value was on disk.
+    offline: bool = False
 
 
 @dataclass
@@ -183,6 +189,35 @@ class Project:
         for cid in [c.id for c in self.clips.values() if c.media_id == media_id]:
             self.clips.pop(cid, None)
         self.dirty = True
+
+    def check_offline(self) -> int:
+        """Refreshes MediaItem.offline for every item against the real
+        filesystem - called once at the end of load() and safe to call
+        again any time (e.g. after the user fixes things outside the app).
+        Titles have no real backing file (see add_title()) so they're
+        never considered offline. Returns how many are currently missing."""
+        count = 0
+        for item in self.media.values():
+            item.offline = item.kind != "title" and not Path(item.path).exists()
+            if item.offline:
+                count += 1
+        return count
+
+    def find_relink_matches(self, folder) -> dict[str, Path]:
+        """For every currently-offline item, the first file found anywhere
+        under `folder` (recursively) whose filename matches - a pure
+        finder, not a mutator, so the UI layer can turn each match into
+        its own undoable relink rather than this silently changing state
+        out from under the undo stack."""
+        folder = Path(folder)
+        offline_items = [m for m in self.media.values() if m.offline]
+        if not offline_items or not folder.is_dir():
+            return {}
+        index: dict[str, Path] = {}
+        for f in folder.rglob("*"):
+            if f.is_file() and f.name not in index:
+                index[f.name] = f
+        return {m.id: index[Path(m.path).name] for m in offline_items if Path(m.path).name in index}
 
     # ------------------------------------------------------------------ tracks
     def video_tracks(self) -> list[Track]:
@@ -398,5 +433,6 @@ class Project:
         proj.clips = {c["id"]: Clip(**c) for c in data.get("clips", [])}
         proj.markers = [Marker(**mk) for mk in data.get("markers", [])]
         proj.bins = [Bin(**b) for b in data.get("bins", [])]
+        proj.check_offline()
         proj.dirty = False
         return proj
