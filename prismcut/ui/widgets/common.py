@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHB
                                QLabel, QLineEdit, QMessageBox, QPushButton, QSlider,
                                QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
+from ...core import cost_estimator
 from ...core import media as media_utils
 from ...core.registry import ModelSpec, Registry
 
@@ -130,7 +131,10 @@ class ModelCombo(QComboBox):
                 self.insertSeparator(self.count()) if self.count() else None
                 last_provider = m.provider
             mark = "🔑 " if has_key else "○ "
-            self.addItem(f"{mark}{(prov.label if prov else m.provider)} · {m.display}", m.key)
+            rate = cost_estimator.format_rate(m)
+            price_suffix = f"  ({rate})" if rate else ""
+            self.addItem(f"{mark}{(prov.label if prov else m.provider)} · {m.display}"
+                        f"{price_suffix}", m.key)
         idx = self.findData(current)
         if idx >= 0:
             self.setCurrentIndex(idx)

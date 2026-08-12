@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QLabel,
 from .. import APP_NAME, __version__
 from ..core import media as media_utils
 from ..core import paths
+from ..core import pricing
 from ..core import shortcuts
 from ..core import updater
 from ..core.agent import AgentToolRunner
@@ -168,6 +169,7 @@ class MainWindow(QMainWindow):
         # running at the time.
         if not os.environ.get("PRISMCUT_DATA_DIR"):
             QTimer.singleShot(1500, self._maybe_check_updates_on_startup)
+            QTimer.singleShot(2000, self._maybe_refresh_pricing_on_startup)
 
     # ---------------------------------------------------------------- helpers
     def _dock(self, title: str, widget: QWidget, area) -> QDockWidget:
@@ -321,6 +323,12 @@ class MainWindow(QMainWindow):
                                   checked=self.settings.get_bool("updater/auto_check", True))
         auto_update_act.triggered.connect(lambda on: self.settings.set("updater/auto_check", on))
         m_help.addAction(auto_update_act)
+        m_help.addSeparator()
+        act(m_help, "💲 Refresh AI Pricing Now", lambda: self._refresh_pricing(silent=False))
+        auto_pricing_act = QAction("Automatically refresh AI pricing", self, checkable=True,
+                                   checked=self.settings.get_bool("pricing/auto_refresh", True))
+        auto_pricing_act.triggered.connect(lambda on: self.settings.set("pricing/auto_refresh", on))
+        m_help.addAction(auto_pricing_act)
         m_help.addSeparator()
         act(m_help, "About PrismCut Studio", self._about)
 
@@ -615,6 +623,29 @@ class MainWindow(QMainWindow):
 
         self.jobs.submit("Check for updates", work, kind="update_check",
                          on_done=done, on_fail=fail)
+
+    def _maybe_refresh_pricing_on_startup(self):
+        if not pricing.should_refresh(self.settings):
+            return
+        # Written BEFORE the fetch actually runs, same anti-storm reasoning
+        # as _maybe_check_updates_on_startup: a refresh still in flight at
+        # the next launch/close shouldn't trigger a re-check storm.
+        pricing.mark_refreshed(self.settings)
+        self._refresh_pricing(silent=True)
+
+    def _refresh_pricing(self, silent: bool):
+        def work(_job):
+            return pricing.fetch_remote()
+
+        def done(result):
+            if result is None:
+                if not silent:
+                    self.toast("Could not refresh AI pricing — try again later.", "error")
+                return
+            if not silent:
+                self.toast("AI pricing refreshed.", "success")
+
+        self.jobs.submit("Refresh AI pricing", work, kind="pricing_refresh", on_done=done)
 
     def _about(self):
         QMessageBox.about(

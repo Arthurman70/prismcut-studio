@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLineEdit,
-                               QMessageBox, QPlainTextEdit, QPushButton)
+                               QMessageBox, QPlainTextEdit, QPushButton, QSpinBox)
 
+from ...core import cost_estimator
 from ...core.pipeline import MoviePipeline
 from ...providers.base import ChatMessage
-from ..widgets.common import ModelCombo
+from ..widgets.common import ModelCombo, label
 
 
 class NewPipelineDialog(QDialog):
@@ -61,6 +62,22 @@ class NewPipelineDialog(QDialog):
             "scene's narration audio. Leave as None to skip it.")
         form.addRow("Lip-sync model", self.lipsync_combo)
 
+        self.est_scenes = QSpinBox()
+        self.est_scenes.setRange(1, 100)
+        self.est_scenes.setValue(8)
+        self.est_scenes.setToolTip(
+            "Just for the cost preview below - the AI decides the real scene count from "
+            "your brief during script breakdown, this doesn't constrain it.")
+        form.addRow("Est. scenes (for cost preview)", self.est_scenes)
+        self.cost_label = label("", dim=True)
+        self.cost_label.setWordWrap(True)
+        form.addRow("", self.cost_label)
+        for w in (self.est_scenes,):
+            w.valueChanged.connect(self._update_cost_estimate)
+        for combo in (self.image_combo, self.video_combo, self.audio_combo):
+            combo.currentIndexChanged.connect(self._update_cost_estimate)
+        self._update_cost_estimate()
+
         buttons = QDialogButtonBox()
         self.go = buttons.addButton("🎬 Create", QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
@@ -107,6 +124,44 @@ class NewPipelineDialog(QDialog):
         self.enhance_btn.setEnabled(False)
         self.enhance_btn.setText("Enhancing…")
         self.jobs.submit("Enhance movie brief", work, kind="chat", on_done=done, on_fail=fail)
+
+    def _update_cost_estimate(self, *_args):
+        n = self.est_scenes.value()
+        breakdown = []
+        total = 0.0
+
+        img = self.image_combo.current_model()
+        if img:
+            c = cost_estimator.estimate_cost(img, img.default_params(), count=n)
+            if c is not None:
+                breakdown.append(f"images ~${c:,.2f}")
+                total += c
+
+        vid = self.video_combo.current_model()
+        if vid:
+            c = cost_estimator.estimate_cost(vid, vid.default_params(), count=n)
+            if c is not None:
+                breakdown.append(f"video ~${c:,.2f}")
+                total += c
+
+        aud = self.audio_combo.current_model()
+        if aud:
+            # TTS is priced per character, driven by narration text that
+            # doesn't exist until the script breakdown actually runs -
+            # ~120 chars/scene (roughly one short spoken line) stands in
+            # for a real prediction, just enough to give a ballpark.
+            c = cost_estimator.estimate_cost(aud, aud.default_params(), count=n, text_len=120 * n)
+            if c is not None:
+                breakdown.append(f"narration ~${c:,.2f}")
+                total += c
+
+        if not breakdown:
+            self.cost_label.setText(
+                "Estimated cost: pricing unknown for the selected model(s).")
+            return
+        self.cost_label.setText(
+            f"Estimated cost for {n} scenes: ~${total:,.2f} total ({', '.join(breakdown)}) - "
+            "actual scene count and per-scene settings can change this.")
 
     def _accept(self):
         brief = self.brief_edit.toPlainText().strip()

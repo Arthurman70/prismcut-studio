@@ -13,6 +13,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QPlainTextEdit,
                                QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
+from ...core import cost_estimator
 from ...core import media as media_utils
 from ...core import paths
 from ...core.pipeline import MoviePipeline, Scene
@@ -478,6 +479,38 @@ class MoviePipelinePanel(QWidget):
         n = remaining if limit is None else min(remaining, limit)
         return f"all {n} remaining" if n == remaining else f"{n} of {remaining} remaining"
 
+    def _stage_targets(self, stage: str, limit: int | None) -> list:
+        """Same filter/sort/limit logic run_image_batch/run_video_batch use
+        internally, replicated here (rather than exposed from the
+        orchestrator) purely to price the exact scenes a confirm gate is
+        about to queue - queries only, submits nothing."""
+        active = "image" if stage == "image" else "video"
+        scenes = sorted((s for s in self.run.pipeline.scenes
+                        if getattr(s, active).active is None), key=lambda s: s.index)
+        return scenes if limit is None else scenes[:limit]
+
+    def _estimate_batch_cost(self, model_key: str, targets: list, stage: str) -> float | None:
+        """Total estimated $ across `targets`, honoring each scene's own
+        param overrides (video length in particular varies scene-to-scene).
+        None if pricing for this model isn't known - callers should omit
+        the cost from their message entirely rather than show $0.00."""
+        model = self.registry.by_key(model_key)
+        if not model:
+            return None
+        overrides_attr = "image_params" if stage == "image" else "video_params"
+        total = 0.0
+        for scene in targets:
+            params = {**model.default_params(), **getattr(scene, overrides_attr)}
+            cost = cost_estimator.estimate_cost(model, params)
+            if cost is None:
+                return None
+            total += cost
+        return total
+
+    @staticmethod
+    def _cost_phrase(cost: float | None) -> str:
+        return "" if cost is None else f" (est. ${cost:,.2f})"
+
     # ---------------------------------------------------------------- gates
     def _run_images(self):
         if not self.run:
@@ -492,11 +525,14 @@ class MoviePipelinePanel(QWidget):
             return
         limit = self._batch_limit()
         phrase = self._batch_wording(remaining, limit)
+        targets = self._stage_targets("image", limit)
+        cost_phrase = self._cost_phrase(
+            self._estimate_batch_cost(self.run.pipeline.image_model, targets, "image"))
         if not confirm_destructive(
                 self.win, self.settings, "pipeline_run_image_batch",
                 "Generate scene images",
-                f"This queues {phrase} scene(s) for image generation, using your configured "
-                "image model. Each call spends your own API credits. Continue?",
+                f"This queues {phrase} scene(s) for image generation{cost_phrase}, using your "
+                "configured image model. Each call spends your own API credits. Continue?",
                 "Generate"):
             return
         self.run.run_image_batch(limit=limit)
@@ -514,12 +550,16 @@ class MoviePipelinePanel(QWidget):
             return
         limit = self._batch_limit()
         phrase = self._batch_wording(remaining, limit)
+        targets = self._stage_targets("video", limit)
+        cost_phrase = self._cost_phrase(
+            self._estimate_batch_cost(self.run.pipeline.video_model, targets, "video"))
         lipsync_note = (" plus a lip-sync pass" if self.run.pipeline.lipsync_model else "")
         if not confirm_destructive(
                 self.win, self.settings, "pipeline_run_video_batch",
                 "Generate scene video",
-                f"This queues {phrase} scene(s) for video generation{lipsync_note} — the most "
-                "expensive stage. Each call spends your own API credits. Continue?",
+                f"This queues {phrase} scene(s) for video generation{cost_phrase}"
+                f"{lipsync_note} — the most expensive stage. Each call spends your own API "
+                "credits. Continue?",
                 "Generate"):
             return
         self.run.run_video_batch(limit=limit)

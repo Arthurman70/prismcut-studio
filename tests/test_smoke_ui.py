@@ -473,6 +473,18 @@ def test_model_combo_allow_none_offers_none_as_default_selection(win):
     assert combo.current_model() is None
 
 
+def test_model_combo_shows_price_hint_for_priced_models(win):
+    """The new pricing feature: each model's dropdown entry carries a
+    short rate label so cost is visible right where you pick the model,
+    not just in the Movie Pipeline's confirm dialogs."""
+    from prismcut.ui.widgets.common import ModelCombo
+
+    combo = ModelCombo(win.registry, win.settings, ("video_generate",), role="test_price_probe")
+    idx = combo.findData("google::veo-3.1-generate-preview")
+    assert idx >= 0
+    assert "$0.4/s" in combo.itemText(idx)
+
+
 def test_new_pipeline_dialog_constructs_and_optional_combos_default_to_none(win):
     from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
 
@@ -533,6 +545,31 @@ def test_new_pipeline_dialog_accept_does_not_require_a_voice_model(win):
     assert dlg.pipeline is not None
     assert dlg.pipeline.audio_model == ""
     dlg.close()
+
+
+def test_new_pipeline_dialog_shows_cost_estimate_as_models_are_picked(win):
+    """The new cost-estimation feature: a running 'estimated cost for N
+    scenes' preview that updates as image/video/voice models and the
+    scene-count preview are changed."""
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        idx = dlg.image_combo.findData("google::gemini-3.1-flash-image")
+        assert idx >= 0
+        dlg.image_combo.setCurrentIndex(idx)
+        assert "images ~$" in dlg.cost_label.text()
+
+        idx = dlg.video_combo.findData("xai::grok-imagine-video-1.5")
+        assert idx >= 0
+        dlg.video_combo.setCurrentIndex(idx)
+        assert "video ~$" in dlg.cost_label.text()
+        assert f"for {dlg.est_scenes.value()} scenes" in dlg.cost_label.text()
+
+        dlg.est_scenes.setValue(20)
+        assert "for 20 scenes" in dlg.cost_label.text()
+    finally:
+        dlg.close()
 
 
 def test_new_pipeline_dialog_accept_carries_through_a_chosen_voice_model(win):
@@ -1210,6 +1247,58 @@ def test_batch_wording_reports_limited_vs_all_remaining(win):
     assert win.movie._batch_wording(12, 100) == "all 12 remaining"   # limit > remaining
 
 
+def test_estimate_batch_cost_sums_per_scene_with_overrides(win):
+    """The new cost-estimation feature: total cost across the scenes a
+    batch is about to queue, honoring each scene's own param overrides
+    (video length varies scene-to-scene) rather than one flat per-scene
+    number - uses the real bundled pricing data, not mocked, since this
+    is exactly what a user sees in the confirm dialog."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Cost test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    s1, s2 = new_scene(0), new_scene(1)
+    s2.video_params = {"duration": 10}   # longer than the model's default of 6s
+    pipeline.scenes = [s1, s2]
+    win.movie._set_pipeline(pipeline)
+    try:
+        img_cost = win.movie._estimate_batch_cost(pipeline.image_model, [s1, s2], "image")
+        assert img_cost == pytest.approx(0.045 * 2)   # $0.045/image (1K) x 2 scenes
+
+        vid_cost = win.movie._estimate_batch_cost(pipeline.video_model, [s1, s2], "video")
+        assert vid_cost == pytest.approx(0.080 * 6 + 0.080 * 10)   # $0.08/s x (default 6s + overridden 10s)
+
+        assert win.movie._estimate_batch_cost("nobody::unpriced-model", [s1], "image") is None
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_run_images_confirm_dialog_includes_cost_estimate(win, monkeypatch):
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Cost dialog test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1)]
+    win.movie._set_pipeline(pipeline)
+    captured = {}
+
+    def fake_confirm(parent, settings, key, title, text, ok_text):
+        captured["text"] = text
+        return False   # decline - run_image_batch must never actually fire
+
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive", fake_confirm)
+    try:
+        win.movie._run_images()
+        assert "est. $" in captured.get("text", "")
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
     """The failure-visibility + retry-after-rejection feature: a failed
     generation (moderation rejection, API constraint, etc.) sets
@@ -1639,6 +1728,37 @@ def test_update_dialog_skip_version_persists_to_settings(win):
 
 def test_check_for_updates_is_wired_into_the_help_menu(win):
     assert callable(win._check_updates)
+
+
+def test_refresh_pricing_wired_into_help_menu_and_shows_toast(win, monkeypatch):
+    import prismcut.core.pricing as pricing_mod
+
+    assert callable(win._refresh_pricing)
+    assert callable(win._maybe_refresh_pricing_on_startup)
+
+    monkeypatch.setattr(pricing_mod, "fetch_remote",
+                        lambda: {"acme::x": {"unit": "per_image", "amount": 1.0}})
+    toasts = []
+    monkeypatch.setattr(win, "toast",
+                        lambda text, kind="info", timeout_ms=5000: toasts.append((text, kind)))
+    win._refresh_pricing(silent=False)
+    assert _wait_until(lambda: len(toasts) == 1)
+    assert toasts[0][1] == "success"
+
+
+def test_maybe_refresh_pricing_on_startup_respects_should_refresh(win, monkeypatch):
+    import prismcut.ui.main_window as main_window_mod
+
+    calls = []
+    monkeypatch.setattr(main_window_mod.pricing, "should_refresh", lambda settings: False)
+    monkeypatch.setattr(win, "_refresh_pricing", lambda silent: calls.append(silent))
+    win._maybe_refresh_pricing_on_startup()
+    assert calls == []
+
+    monkeypatch.setattr(main_window_mod.pricing, "should_refresh", lambda settings: True)
+    monkeypatch.setattr(main_window_mod.pricing, "mark_refreshed", lambda settings: None)
+    win._maybe_refresh_pricing_on_startup()
+    assert calls == [True]
 
 
 # ------------------------------------------------------------------- export

@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "updated": "2026-08-12",
+  "note": "Per-model API pricing for the cost estimator. Keyed by the same 'provider::id' string ModelSpec.key already produces - no changes needed to models.json to add/update a price. This file is superseded at runtime by a remote copy (see core/pricing.py) fetched from the project's GitHub repo when available, falling back to this bundled copy when offline or on first run before any fetch has completed. confidence: high = fetched directly from the provider's own current docs; medium = cross-referenced consistently across independent sources when the official page didn't expose numbers to automated fetching; low = reseller/aggregator-derived, spot-check before trusting for a large project. Models with no confirmed public pricing are omitted entirely rather than guessed (see: Suno).",
+  "units": "per_second (video, per second of OUTPUT), per_image, per_generation (flat per call - duration/resolution folded into one representative price, see note), per_minute (audio/lip-sync), per_1k_chars (TTS), per_1m_tokens (chat/some TTS - input and output priced separately)",
+  "prices": {
+    "google::gemini-3.6-flash": { "unit": "per_1m_tokens", "input": 1.50, "output": 7.50, "confidence": "high" },
+    "google::gemini-3.1-pro-preview": { "unit": "per_1m_tokens", "input": 2.00, "output": 12.00, "confidence": "high", "note": "Rate for prompts ≤200k tokens; $4.00/$18.00 above that." },
+    "google::gemini-3.5-flash-lite": { "unit": "per_1m_tokens", "input": 0.30, "output": 2.50, "confidence": "high" },
+    "google::gemini-3.1-flash-image": { "unit": "per_image", "amount": 0.045, "confidence": "high", "note": "1K output; 2K is $0.067/image." },
+    "google::gemini-3-pro-image": { "unit": "per_image", "amount": 0.134, "confidence": "high", "note": "1K/2K output; 4K is $0.24/image." },
+    "google::gemini-3.1-flash-lite-image": { "unit": "per_image", "amount": 0.0336, "confidence": "high" },
+    "google::veo-3.1-generate-preview": { "unit": "per_second", "amount": 0.40, "confidence": "high", "note": "720p/1080p; 4K is $0.60/s." },
+    "google::veo-3.1-fast-generate-preview": { "unit": "per_second", "amount": 0.10, "confidence": "high", "note": "720p; up to $0.30/s at 4K." },
+    "google::veo-3.1-lite-generate-preview": { "unit": "per_second", "amount": 0.05, "confidence": "high", "note": "720p; 1080p is $0.08/s." },
+    "google::gemini-3.1-flash-tts-preview": { "unit": "per_1m_tokens", "input": 1.00, "output": 20.00, "confidence": "high", "note": "Output priced per audio token, not per character." },
+
+    "openai::gpt-5.6-sol": { "unit": "per_1m_tokens", "input": 5.00, "output": 30.00, "confidence": "medium" },
+    "openai::gpt-5.6-terra": { "unit": "per_1m_tokens", "input": 2.00, "output": 12.00, "confidence": "medium" },
+    "openai::gpt-5.6-luna": { "unit": "per_1m_tokens", "input": 0.20, "output": 1.20, "confidence": "medium" },
+    "openai::gpt-image-2": { "unit": "per_image", "amount": 0.05, "confidence": "low", "note": "Billed per input/output token in reality; this is a derived mid-estimate (~$0.03 at 1K to ~$0.06 at 4K)." },
+    "openai::gpt-image-1": { "unit": "per_image", "amount": 0.042, "confidence": "medium", "deprecated": true, "sunset_date": "2026-10-23", "note": "Medium quality/1024×1024; low is $0.011, high is $0.167. Retiring Oct 23, 2026." },
+    "openai::sora-2": { "unit": "per_second", "amount": 0.10, "confidence": "medium", "deprecated": true, "sunset_date": "2026-09-24", "note": "720p. The entire Sora API shuts down Sept 24, 2026 per OpenAI's own deprecation notice." },
+    "openai::sora-2-pro": { "unit": "per_second", "amount": 0.30, "confidence": "medium", "deprecated": true, "sunset_date": "2026-09-24", "note": "720p; 1080p is $0.70/s. Same Sept 24, 2026 shutdown as sora-2." },
+    "openai::gpt-4o-mini-tts": { "unit": "per_1m_tokens", "input": 0.60, "confidence": "low", "note": "Input text tokens only; audio output commonly cited around $0.015/min but has no official per-token figure." },
+    "openai::whisper-1": { "unit": "per_minute", "amount": 0.006, "confidence": "high" },
+    "openai::gpt-4o-transcribe": { "unit": "per_1m_tokens", "input": 2.50, "output": 10.00, "confidence": "medium", "note": "≈$0.006/min of audio in typical use." },
+
+    "anthropic::claude-sonnet-5": { "unit": "per_1m_tokens", "input": 2.00, "output": 10.00, "confidence": "high" },
+    "anthropic::claude-fable-5": { "unit": "per_1m_tokens", "input": 10.00, "output": 50.00, "confidence": "high" },
+    "anthropic::claude-opus-5": { "unit": "per_1m_tokens", "input": 5.00, "output": 25.00, "confidence": "high" },
+    "anthropic::claude-haiku-4-5-20251001": { "unit": "per_1m_tokens", "input": 1.00, "output": 5.00, "confidence": "high" },
+
+    "xai::grok-4.5": { "unit": "per_1m_tokens", "input": 2.00, "output": 6.00, "confidence": "high", "note": "Rate for <200k context; $4.00/$12.00 at ≥200k." },
+    "xai::grok-imagine-image-quality": { "unit": "per_image", "amount": 0.05, "confidence": "high" },
+    "xai::grok-imagine-video-1.5": { "unit": "per_second", "amount": 0.080, "confidence": "high" },
+
+    "deepseek::deepseek-v4-flash": { "unit": "per_1m_tokens", "input": 0.14, "output": 0.28, "confidence": "high", "note": "Standard (cache-miss) rate; cache-hit input is $0.0028/1M." },
+    "deepseek::deepseek-v4-pro": { "unit": "per_1m_tokens", "input": 0.435, "output": 0.87, "confidence": "high", "note": "Cache-hit input is $0.003625/1M." },
+
+    "minimax::MiniMax-M2": { "unit": "per_1m_tokens", "input": 0.30, "output": 1.20, "confidence": "medium" },
+    "minimax::MiniMax-H3": { "unit": "per_second", "amount": 0.13, "confidence": "low", "note": "2K output. MiniMax has not published official pay-as-you-go pricing for this model as of Aug 2026; third-party estimates range $0.07-0.18/s." },
+    "minimax::MiniMax-Hailuo-02": { "unit": "per_generation", "amount": 0.28, "confidence": "medium", "note": "Priced per video, not per-second: 512p/6s=$0.10, 512p/10s=$0.15, 768p/6s=$0.28 (shown), 768p/10s=$0.56, 1080p/6s=$0.49." },
+    "minimax::music-3.0": { "unit": "per_generation", "amount": 0.15, "confidence": "medium", "note": "Up to 5 minutes." },
+    "minimax::speech-02-hd": { "unit": "per_1k_chars", "amount": 0.10, "confidence": "medium" },
+
+    "seedance::dreamina-seedance-2-0-260128": { "unit": "per_generation", "amount": 0.50, "confidence": "low", "note": "Token-based in reality: ≈$0.35 for 5s/480p, ≈$0.76 for 5s/720p; shown value is a rough midpoint." },
+    "seedance::seedance-1-0-pro-250528": { "unit": "per_generation", "amount": 0.74, "confidence": "low", "note": "BytePlus's own direct rate is unconfirmed; this is fal.ai's resale price for 5s/1080p as a rough proxy." },
+
+    "stability::stable-image-ultra": { "unit": "per_image", "amount": 0.08, "confidence": "medium" },
+    "stability::sd3.5-large": { "unit": "per_image", "amount": 0.065, "confidence": "medium" },
+    "stability::stability-inpaint": { "unit": "per_image", "amount": 0.05, "confidence": "medium" },
+    "stability::remove-background": { "unit": "per_image", "amount": 0.05, "confidence": "medium" },
+    "stability::upscale-fast": { "unit": "per_image", "amount": 0.02, "confidence": "medium" },
+
+    "bfl::flux-2-pro": { "unit": "per_image", "amount": 0.03, "confidence": "medium", "note": "Priced per megapixel; shown value is for one 1MP (≈1024×1024) image." },
+    "bfl::flux-kontext-pro": { "unit": "per_image", "amount": 0.04, "confidence": "medium" },
+    "bfl::flux-kontext-max": { "unit": "per_image", "amount": 0.08, "confidence": "medium" },
+
+    "fal::fal-ai/bytedance/seedance/v1/pro/text-to-video": { "unit": "per_generation", "amount": 0.74, "confidence": "medium", "note": "5s at 1080p." },
+    "fal::fal-ai/minimax/hailuo-02/pro/image-to-video": { "unit": "per_second", "amount": 0.08, "confidence": "medium", "note": "1080p." },
+    "fal::fal-ai/kling-video/v2.6/pro/text-to-video": { "unit": "per_second", "amount": 0.07, "confidence": "medium", "note": "Audio off; $0.14/s with native audio on." },
+    "fal::fal-ai/kling-video/v2.6/pro/image-to-video": { "unit": "per_second", "amount": 0.07, "confidence": "medium", "note": "Audio off; $0.14/s with native audio on." },
+    "fal::fal-ai/flux-pro/v1.1-ultra": { "unit": "per_image", "amount": 0.06, "confidence": "medium", "note": "4-megapixel output." },
+    "fal::fal-ai/sync-lipsync/v2/pro": { "unit": "per_minute", "amount": 5.00, "confidence": "medium" },
+
+    "replicate::google/veo-3": { "unit": "per_second", "amount": 0.75, "confidence": "low" },
+    "replicate::black-forest-labs/flux-1.1-pro": { "unit": "per_image", "amount": 0.04, "confidence": "low" },
+    "replicate::minimax/music-01": { "unit": "per_generation", "amount": 0.35, "confidence": "low", "note": "Base price; scales up with output length." },
+    "replicate::sync/lipsync-2-pro": { "unit": "per_minute", "amount": 4.50, "confidence": "low", "note": "Reported range ≈$4.00-4.98/min." },
+
+    "elevenlabs::eleven_v3": { "unit": "per_1k_chars", "amount": 0.10, "confidence": "high" },
+    "elevenlabs::eleven_multilingual_v2": { "unit": "per_1k_chars", "amount": 0.10, "confidence": "high" },
+    "elevenlabs::eleven-music": { "unit": "per_minute", "amount": 0.15, "confidence": "high" },
+    "elevenlabs::eleven-sfx": { "unit": "per_minute", "amount": 0.12, "confidence": "high" }
+  }
+}
