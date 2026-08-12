@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prismcut-studio"
-version = "0.4.0"
+version = "0.4.1"
 description = "Open-source AI photo, video & audio studio - bring your own API keys (Gemini/Nano Banana, Veo, Sora, Grok Imagine, MiniMax Hailuo, Seedance, FLUX, Stability, ElevenLabs and more)"
 readme = "README.md"
 license = { text = "MIT" }
