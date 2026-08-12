@@ -616,3 +616,33 @@ def test_chroma_key_similarity_and_blend_are_clamped(tmp_path):
 
     assert "similarity=1.000" in joined
     assert "blend=0.000" in joined
+
+
+def test_lut_off_by_default(tmp_path):
+    p = make_project(tmp_path)
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "lut3d" not in joined
+
+
+def test_lut_path_adds_lut3d_filter(tmp_path):
+    from prismcut.core.render import _escape_filter_path
+
+    p = make_project(tmp_path)
+    clip = next(c for c in p.clips.values() if p.track(c.track_id).kind == "video")
+    lut_path = str(tmp_path / "look.cube")
+    clip.effects["lut_path"] = lut_path
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert f"lut3d=file='{_escape_filter_path(lut_path)}'" in joined
+
+
+def test_lut_path_windows_drive_colon_is_escaped(tmp_path):
+    p = make_project(tmp_path)
+    clip = next(c for c in p.clips.values() if p.track(c.track_id).kind == "video")
+    clip.effects["lut_path"] = r"C:\LUTs\Teal and Orange.cube"
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "lut3d=file='C\\:/LUTs/Teal and Orange.cube'" in joined

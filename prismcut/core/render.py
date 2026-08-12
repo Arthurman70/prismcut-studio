@@ -101,6 +101,14 @@ def _ffmpeg_color(hexval: str) -> str:
     return "0x" + (hexval or "#ffffff").lstrip("#")
 
 
+def _escape_filter_path(path: str) -> str:
+    """A Windows path used as an ffmpeg filter option value (lut3d's file=,
+    same idea as drawtext's fontfile= for titles) needs forward slashes and
+    its drive letter's colon escaped, since a bare ':' would otherwise be
+    parsed as the end of the filter option rather than part of the path."""
+    return str(path).replace("\\", "/").replace(":", "\\:")
+
+
 def _chroma_key_filters(fx: dict) -> list[str]:
     """chromakey (YUV-space keying, generally cleaner than the simpler RGB
     colorkey filter for real green/blue-screen footage) + a despill pass to
@@ -180,6 +188,8 @@ def _clip_video_filters(c: Clip, w: int, h: int, m=None, shift: Optional[float] 
         eq.append(f"saturation={1.0 + float(fx['saturation']) / 100.0:.3f}")
     if eq:
         chain.append("eq=" + ":".join(eq))
+    if fx.get("lut_path"):
+        chain.append(f"lut3d=file='{_escape_filter_path(fx['lut_path'])}'")
     if fx.get("blur"):
         chain.append(f"gblur=sigma={float(fx['blur']):.2f}")
     if fx.get("scale_pct") not in (None, 100):

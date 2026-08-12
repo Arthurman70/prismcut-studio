@@ -1583,6 +1583,128 @@ def test_effects_panel_reset_clears_chroma_key_too(win):
         win.effects.show_clip(None)
 
 
+def test_effects_panel_load_lut_is_undoable(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    lut = tmp_path / "teal_orange.cube"
+    lut.write_text("LUT_3D_SIZE 2\n", encoding="utf-8")
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(lut), "*.cube"))
+    try:
+        win.effects.show_clip(clip.id)
+
+        win.effects._load_lut()
+
+        assert clip.effects.get("lut_path") == str(lut)
+        assert win.effects.lut_label.text() == "teal_orange.cube"
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert "lut_path" not in clip.effects
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_load_lut_cancelled_does_nothing(win, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: ("", ""))
+    try:
+        win.effects.show_clip(clip.id)
+        win.effects._load_lut()
+        assert "lut_path" not in clip.effects
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_clear_lut_is_undoable(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    clip.effects = {"lut_path": "/some/look.cube"}
+    try:
+        win.effects.show_clip(clip.id)
+
+        win.effects._clear_lut()
+
+        assert "lut_path" not in clip.effects
+        assert win.effects.lut_label.text() == "No LUT"
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert clip.effects.get("lut_path") == "/some/look.cube"
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_clear_lut_without_a_lut_is_a_noop(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    try:
+        win.effects.show_clip(clip.id)
+        win.effects._clear_lut()   # no lut_path set - must not crash or push an entry
+        assert clip.effects == {}
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_show_clip_updates_lut_label(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    a.effects = {"lut_path": "/luts/moody.cube"}
+    b = win.project.add_clip(img.id, track.id, 3.0, 2.0)
+    try:
+        win.effects.show_clip(a.id)
+        assert win.effects.lut_label.text() == "moody.cube"
+
+        win.effects.show_clip(b.id)
+        assert win.effects.lut_label.text() == "No LUT"
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_clip(b.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_reset_clears_lut_too(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    clip.effects = {"lut_path": "/luts/moody.cube", "brightness": 40}
+    try:
+        win.effects.show_clip(clip.id)
+
+        win.effects._reset()
+
+        assert clip.effects == {}
+        assert win.effects.lut_label.text() == "No LUT"
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
 def test_timeline_add_track_button_is_undoable(win):
     """Bug fix: the Timeline panel's own toolbar/context-menu 'Add track'
     controls used to call project.add_track() directly with no undo entry,

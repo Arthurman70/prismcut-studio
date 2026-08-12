@@ -1,9 +1,11 @@
 """Effects panel: per-clip effect stack applied at export via ffmpeg filters."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QLabel, QPushButton, QScrollArea,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from ...core.project import Project
 from ...core.undo_commands import ChangePropertiesCommand
@@ -78,6 +80,21 @@ class EffectsPanel(QWidget):
         self.chroma_blend.spin.editingFinished.connect(self._commit_gesture)
         lay.addWidget(self.chroma_blend)
 
+        lay.addWidget(label("LUT (color look)", h1=True))
+        lut_row = QHBoxLayout()
+        self.lut_label = QLabel("No LUT")
+        self.lut_label.setWordWrap(True)
+        self.lut_load_btn = QPushButton("Load LUT…")
+        self.lut_load_btn.clicked.connect(self._load_lut)
+        self.lut_clear_btn = QPushButton("Clear")
+        self.lut_clear_btn.clicked.connect(self._clear_lut)
+        lut_row.addWidget(self.lut_label, 1)
+        lut_row.addWidget(self.lut_load_btn)
+        lut_row.addWidget(self.lut_clear_btn)
+        lay.addLayout(lut_row)
+        lay.addWidget(label("Applies a .cube 3D LUT on export - not a managed library, "
+                            "just the one file you pick.", dim=True))
+
         reset = QPushButton("Reset all effects")
         reset.clicked.connect(self._reset)
         lay.addWidget(reset)
@@ -104,6 +121,8 @@ class EffectsPanel(QWidget):
             s.setEnabled(on)
         self.chroma_check.setEnabled(on)
         self._update_chroma_enabled()
+        self.lut_load_btn.setEnabled(on)
+        self.lut_clear_btn.setEnabled(on)
 
     def _update_chroma_enabled(self):
         on = self.chroma_check.isEnabled() and self.chroma_check.isChecked()
@@ -122,6 +141,7 @@ class EffectsPanel(QWidget):
         if not clip:
             self.title.setText("Select a clip in the timeline to edit its effects.")
             self._set_enabled(False)
+            self._update_lut_label()
             return
         self.title.setText(f"Effects · {clip.label or 'clip'}")
         self._set_enabled(True)
@@ -138,6 +158,7 @@ class EffectsPanel(QWidget):
         self.chroma_blend.set_value(float(clip.effects.get("chroma_key_blend", 10)))
         self._loading = False
         self._update_chroma_enabled()
+        self._update_lut_label()
 
     def _changed(self, *_a):
         """Live-updates clip.effects on every tick for immediate visual
@@ -187,6 +208,40 @@ class EffectsPanel(QWidget):
         self.project.dirty = True
         self.effectsChanged.emit()
 
+    def _update_lut_label(self):
+        clip = self.project.clips.get(self.clip_id) if self.clip_id else None
+        path = clip.effects.get("lut_path") if clip else None
+        self.lut_label.setText(Path(path).name if path else "No LUT")
+
+    def _lut_refresh(self):
+        self.project.dirty = True
+        self._update_lut_label()
+        self.effectsChanged.emit()
+
+    def _load_lut(self):
+        clip = self.project.clips.get(self.clip_id) if self.clip_id else None
+        if not clip:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load LUT", "", "3D LUT files (*.cube *.3dl *.dat *.m3d *.csp)")
+        if not path:
+            return
+        before = dict(clip.effects)
+        after = dict(clip.effects)
+        after["lut_path"] = path
+        self.undo_stack.push(ChangePropertiesCommand(
+            f"Apply LUT · {Path(path).name}", clip,
+            {"effects": before}, {"effects": after}, self._lut_refresh))
+
+    def _clear_lut(self):
+        clip = self.project.clips.get(self.clip_id) if self.clip_id else None
+        if not clip or "lut_path" not in clip.effects:
+            return
+        before = dict(clip.effects)
+        after = {k: v for k, v in clip.effects.items() if k != "lut_path"}
+        self.undo_stack.push(ChangePropertiesCommand(
+            "Remove LUT", clip, {"effects": before}, {"effects": after}, self._lut_refresh))
+
     def _commit_gesture(self):
         clip = self.project.clips.get(self.clip_id) if self.clip_id else None
         if not clip or self._gesture_before is None:
@@ -214,6 +269,9 @@ class EffectsPanel(QWidget):
         self._update_chroma_enabled()
         self._changed()
         self._chroma_changed()
+        if clip is not None and "lut_path" in clip.effects:
+            clip.effects = {k: v for k, v in clip.effects.items() if k != "lut_path"}
+        self._update_lut_label()
         if clip is not None and before != clip.effects:
             self.undo_stack.push(ChangePropertiesCommand(
                 f"Reset effects · {clip.label or 'clip'}", clip,
