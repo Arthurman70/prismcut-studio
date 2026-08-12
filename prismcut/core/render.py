@@ -133,7 +133,7 @@ def _title_drawtext(m, w: int, h: int) -> str:
     return ":".join(parts)
 
 
-def _clip_video_filters(c: Clip, w: int, h: int, m=None) -> str:
+def _clip_video_filters(c: Clip, w: int, h: int, m=None, shift: Optional[float] = None) -> str:
     fx = c.effects or {}
     chain = []
     if m is not None and getattr(m, "kind", None) == "title":
@@ -169,11 +169,18 @@ def _clip_video_filters(c: Clip, w: int, h: int, m=None) -> str:
     if op is not None and float(op) < 100:
         chain.append(f"format=rgba,colorchannelmixer=aa={float(op) / 100.0:.3f}")
     chain.append("format=yuva420p")
-    chain.append(f"setpts=PTS-STARTPTS+{_esc(c.start)}/TB")
+    # shift defaults to the clip's own absolute timeline position; a
+    # transition pair (see build_command's xfade branch) passes shift=0.0
+    # for both inputs instead, so xfade sees two streams starting at local
+    # time 0 - the combined result gets shifted to the pair's start once,
+    # after xfade, rather than each input being pre-positioned.
+    s = c.start if shift is None else shift
+    chain.append(f"setpts=PTS-STARTPTS+{_esc(s)}/TB")
     return ",".join(chain)
 
 
-def _clip_audio_filters(c: Clip, track_gain: float = 0.0, track_pan: float = 0.0) -> str:
+def _clip_audio_filters(c: Clip, track_gain: float = 0.0, track_pan: float = 0.0,
+                        shift: Optional[float] = None) -> str:
     speed = _clip_speed(c)
     parts = ["aresample=48000", "aformat=sample_fmts=fltp:channel_layouts=stereo",
              "asetpts=PTS-STARTPTS"]
@@ -192,9 +199,22 @@ def _clip_audio_filters(c: Clip, track_gain: float = 0.0, track_pan: float = 0.0
     if c.fade_out > 0:
         st = max(0.0, c.duration - c.fade_out)
         parts.append(f"afade=t=out:st={_esc(st)}:d={_esc(c.fade_out)}")
-    ms = int(round(c.start * 1000))
+    ms = int(round((c.start if shift is None else shift) * 1000))
     parts.append(f"adelay={ms}|{ms}")
     return ",".join(parts)
+
+
+def _clip_input_args(c: Clip, m, w: int, h: int, fps: int) -> list[str]:
+    if m.kind == "title":
+        # No real file to demux - a lavfi color source generates a
+        # transparent canvas of exactly the requested duration, so unlike
+        # image/video there's no separate -ss/in_point concept.
+        color_src = f"color=c=black@0.0:s={w}x{h}:r={fps}"
+        return ["-f", "lavfi", "-t", _esc(_source_trim_duration(c)), "-i", color_src]
+    src = str(Path(m.path))
+    if m.kind == "image":
+        return ["-loop", "1", "-t", _esc(c.duration), "-framerate", str(fps), "-i", src]
+    return ["-ss", _esc(c.in_point), "-t", _esc(_source_trim_duration(c)), "-i", src]
 
 
 def build_command(project: Project, opts: RenderOptions) -> list[str]:
@@ -219,21 +239,67 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
 
     # bottom video track first so upper tracks overlay on top
     for track in reversed(project.video_tracks()):
-        for c in project.clips_on(track.id):
+        clips = project.clips_on(track.id)
+        i = 0
+        while i < len(clips):
+            c = clips[i]
             m = project.media.get(c.media_id)
             if not m or c.muted or track.mute:
+                i += 1
                 continue
-            src = str(Path(m.path))
-            if m.kind == "title":
-                # No real file to demux - a lavfi color source generates a
-                # transparent canvas of exactly the requested duration, so
-                # unlike image/video there's no separate -ss/in_point concept.
-                color_src = f"color=c=black@0.0:s={w}x{h}:r={fps}"
-                inputs.append(["-f", "lavfi", "-t", _esc(_source_trim_duration(c)), "-i", color_src])
-            elif m.kind == "image":
-                inputs.append(["-loop", "1", "-t", _esc(c.duration), "-framerate", str(fps), "-i", src])
-            else:
-                inputs.append(["-ss", _esc(c.in_point), "-t", _esc(_source_trim_duration(c)), "-i", src])
+            nxt = clips[i + 1] if i + 1 < len(clips) else None
+            nm = project.media.get(nxt.media_id) if nxt else None
+            overlap = 0.0
+            if (c.transition_out > 0 and nxt is not None and nm is not None
+                    and not nxt.muted and abs(nxt.start - c.end) < 0.01):
+                overlap = min(c.transition_out, c.duration, nxt.duration)
+
+            if overlap > 0:
+                # Cross-dissolve pair: two inputs combined via xfade/
+                # acrossfade into ONE label spanning [c.start, nxt.end) -
+                # everything downstream (the overlay chain, amix) treats
+                # that label exactly like any single clip's, so nothing
+                # else in build_command needs to know a pair produced it.
+                inputs.append(_clip_input_args(c, m, w, h, fps))
+                inputs.append(_clip_input_args(nxt, nm, w, h, fps))
+                if not audio_only:
+                    la, lb = f"v{idx}", f"v{idx + 1}"
+                    vparts.append(f"[{idx}:v]{_clip_video_filters(c, w, h, m, shift=0.0)}[{la}]")
+                    vparts.append(f"[{idx + 1}:v]{_clip_video_filters(nxt, w, h, nm, shift=0.0)}[{lb}]")
+                    combined = f"vx{idx}"
+                    xoffset = _esc(max(0.0, c.duration - overlap))
+                    vparts.append(f"[{la}][{lb}]xfade=transition=fade:duration={_esc(overlap)}:"
+                                  f"offset={xoffset}[{combined}pre]")
+                    vparts.append(f"[{combined}pre]setpts=PTS-STARTPTS+{_esc(c.start)}/TB[{combined}]")
+                    vlabels.append((combined, c.start, nxt.end))
+                a_ok = m.kind == "video" and m.has_audio and not c.strip_audio and audible(track)
+                b_ok = nm.kind == "video" and nm.has_audio and not nxt.strip_audio and audible(track)
+                if a_ok and b_ok:
+                    ala, alb = f"a{idx}", f"a{idx + 1}"
+                    aparts.append(f"[{idx}:a]"
+                                  f"{_clip_audio_filters(c, track.gain_db, track.pan, shift=0.0)}[{ala}]")
+                    aparts.append(f"[{idx + 1}:a]"
+                                  f"{_clip_audio_filters(nxt, track.gain_db, track.pan, shift=0.0)}[{alb}]")
+                    acombined = f"ax{idx}"
+                    aparts.append(f"[{ala}][{alb}]acrossfade=d={_esc(overlap)}[{acombined}pre]")
+                    ms = int(round(c.start * 1000))
+                    aparts.append(f"[{acombined}pre]adelay={ms}|{ms}[{acombined}]")
+                    alabels.append(acombined)
+                else:
+                    if a_ok:
+                        al = f"a{idx}"
+                        aparts.append(f"[{idx}:a]{_clip_audio_filters(c, track.gain_db, track.pan)}[{al}]")
+                        alabels.append(al)
+                    if b_ok:
+                        al = f"a{idx + 1}"
+                        aparts.append(f"[{idx + 1}:a]"
+                                      f"{_clip_audio_filters(nxt, track.gain_db, track.pan)}[{al}]")
+                        alabels.append(al)
+                idx += 2
+                i += 2
+                continue
+
+            inputs.append(_clip_input_args(c, m, w, h, fps))
             if not audio_only:
                 lbl = f"v{idx}"
                 vparts.append(f"[{idx}:v]{_clip_video_filters(c, w, h, m)}[{lbl}]")
@@ -243,6 +309,7 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
                 aparts.append(f"[{idx}:a]{_clip_audio_filters(c, track.gain_db, track.pan)}[{al}]")
                 alabels.append(al)
             idx += 1
+            i += 1
 
     for track in project.audio_tracks():
         for c in project.clips_on(track.id):

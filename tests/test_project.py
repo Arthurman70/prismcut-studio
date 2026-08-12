@@ -337,3 +337,63 @@ def test_add_title_clip_gets_default_duration_from_the_media_item(tmp_path):
     clip = p.add_clip(item.id, v1.id, 0.0)   # no explicit duration
 
     assert clip.duration == 7.0
+
+
+def test_next_adjacent_clip_finds_the_exactly_touching_clip(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(item.id, v1.id, 0.0, 3.0)
+    b = p.add_clip(item.id, v1.id, 3.0, 2.0)
+
+    assert p.next_adjacent_clip(a.id) is b
+
+
+def test_next_adjacent_clip_returns_none_across_a_gap(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(item.id, v1.id, 0.0, 3.0)
+    p.add_clip(item.id, v1.id, 4.0, 2.0)   # 1s gap
+
+    assert p.next_adjacent_clip(a.id) is None
+
+
+def test_next_adjacent_clip_returns_none_for_the_last_clip(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(item.id, v1.id, 0.0, 3.0)
+
+    assert p.next_adjacent_clip(a.id) is None
+
+
+def test_next_adjacent_clip_returns_none_for_unknown_clip():
+    p = Project()
+    assert p.next_adjacent_clip("does-not-exist") is None
+
+
+def test_next_adjacent_clip_ignores_a_different_track(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    v2 = p.video_tracks()[0]
+    a = p.add_clip(item.id, v1.id, 0.0, 3.0)
+    p.add_clip(item.id, v2.id, 3.0, 2.0)   # touches a.end but on a different track
+
+    assert p.next_adjacent_clip(a.id) is None
+
+
+def test_clip_transition_out_defaults_to_zero_and_round_trips(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    clip = p.add_clip(item.id, v1.id, 0.0, 3.0)
+    assert clip.transition_out == 0.0
+
+    clip.transition_out = 1.5
+    path = tmp_path / "proj.pcut"
+    p.save(path)
+    loaded = Project.load(path)
+
+    assert loaded.clips[clip.id].transition_out == 1.5

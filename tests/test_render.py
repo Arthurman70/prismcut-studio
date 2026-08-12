@@ -426,3 +426,151 @@ def test_title_clip_has_no_embedded_audio_mixed_in(tmp_path):
 
     assert "amix" not in " ".join(cmd)
     assert "[aout]" not in cmd
+
+
+def _video_item(p: Project, tmp_path, name: str, has_audio: bool):
+    vid = tmp_path / name
+    vid.write_bytes(b"fake-mp4")
+    item = p.add_media(vid)
+    item.kind = "video"
+    item.has_audio = has_audio
+    return item
+
+
+def test_transition_out_produces_xfade_between_adjacent_clips(tmp_path):
+    p = Project()
+    img_a = tmp_path / "a.png"
+    img_a.write_bytes(b"\x89PNG")
+    img_b = tmp_path / "b.png"
+    img_b.write_bytes(b"\x89PNG")
+    ia, ib = p.add_media(img_a), p.add_media(img_b)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(ia.id, v1.id, 0.0, 4.0)
+    b = p.add_clip(ib.id, v1.id, 4.0, 3.0)   # exactly adjacent
+    a.transition_out = 1.0
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+    joined = " ".join(cmd)
+
+    assert "-i" in cmd and cmd.count("-i") == 2   # both clips still become real inputs
+    assert "xfade=transition=fade:duration=1:offset=3" in joined
+    # exactly one overlay stage for the pair, not two - [c.start, b.end)
+    assert "enable='between(t,0,7)'" in joined
+
+
+def test_transition_out_falls_back_to_two_clips_when_not_adjacent(tmp_path):
+    p = Project()
+    img_a = tmp_path / "a.png"
+    img_a.write_bytes(b"\x89PNG")
+    img_b = tmp_path / "b.png"
+    img_b.write_bytes(b"\x89PNG")
+    ia, ib = p.add_media(img_a), p.add_media(img_b)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(ia.id, v1.id, 0.0, 4.0)
+    p.add_clip(ib.id, v1.id, 5.0, 3.0)   # 1s gap - not adjacent
+    a.transition_out = 1.0
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    joined = " ".join(build_command(p, opts))
+
+    assert "xfade" not in joined
+    assert joined.count("overlay=") == 2
+
+
+def test_transition_out_ignored_without_a_next_clip(tmp_path):
+    p = Project()
+    img_a = tmp_path / "a.png"
+    img_a.write_bytes(b"\x89PNG")
+    ia = p.add_media(img_a)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(ia.id, v1.id, 0.0, 4.0)
+    a.transition_out = 1.0   # nothing after it on this track
+
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+    cmd = build_command(p, opts)   # must not raise
+
+    assert "xfade" not in " ".join(cmd)
+
+
+def test_transition_out_clamped_to_the_shorter_clips_duration(tmp_path):
+    p = Project()
+    img_a = tmp_path / "a.png"
+    img_a.write_bytes(b"\x89PNG")
+    img_b = tmp_path / "b.png"
+    img_b.write_bytes(b"\x89PNG")
+    ia, ib = p.add_media(img_a), p.add_media(img_b)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(ia.id, v1.id, 0.0, 4.0)
+    p.add_clip(ib.id, v1.id, 4.0, 1.5)   # shorter than the requested overlap
+    a.transition_out = 10.0   # way more than either clip's duration
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "xfade=transition=fade:duration=1.5:offset=2.5" in joined
+
+
+def test_transition_out_skipped_when_next_clip_is_muted(tmp_path):
+    p = Project()
+    img_a = tmp_path / "a.png"
+    img_a.write_bytes(b"\x89PNG")
+    img_b = tmp_path / "b.png"
+    img_b.write_bytes(b"\x89PNG")
+    ia, ib = p.add_media(img_a), p.add_media(img_b)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(ia.id, v1.id, 0.0, 4.0)
+    b = p.add_clip(ib.id, v1.id, 4.0, 3.0)
+    a.transition_out = 1.0
+    b.muted = True
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "xfade" not in joined
+
+
+def test_transition_crossfades_audio_when_both_clips_have_it(tmp_path):
+    p = Project()
+    va = _video_item(p, tmp_path, "a.mp4", has_audio=True)
+    vb = _video_item(p, tmp_path, "b.mp4", has_audio=True)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(va.id, v1.id, 0.0, 4.0)
+    p.add_clip(vb.id, v1.id, 4.0, 3.0)
+    a.transition_out = 1.0
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "acrossfade=d=1" in joined
+    assert "amix" not in joined   # only one combined audio stream - nothing else to mix with
+
+
+def test_transition_audio_falls_back_to_single_clips_when_only_one_has_audio(tmp_path):
+    p = Project()
+    va = _video_item(p, tmp_path, "a.mp4", has_audio=True)
+    vb = _video_item(p, tmp_path, "b.mp4", has_audio=False)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(va.id, v1.id, 0.0, 4.0)
+    p.add_clip(vb.id, v1.id, 4.0, 3.0)
+    a.transition_out = 1.0
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "acrossfade" not in joined
+    assert "adelay=0|0" in joined   # clip a's own audio, positioned at its own start (0)
+
+
+def test_transition_works_between_a_title_and_an_image(tmp_path):
+    p = Project()
+    img_b = tmp_path / "b.png"
+    img_b.write_bytes(b"\x89PNG")
+    title = p.add_title("Intro", duration=4.0)
+    ib = p.add_media(img_b)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(title.id, v1.id, 0.0, 4.0)
+    p.add_clip(ib.id, v1.id, 4.0, 3.0)
+    a.transition_out = 1.0
+
+    cmd = build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4")))
+    joined = " ".join(cmd)
+
+    assert "drawtext=" in joined   # title branch still ran for the first half of the pair
+    assert "xfade=transition=fade:duration=1:offset=3" in joined

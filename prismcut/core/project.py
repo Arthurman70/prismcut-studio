@@ -69,6 +69,14 @@ class Clip:
     # audio clip is the only thing that plays it, avoiding doubled sound.
     # Distinct from `muted`, which hides the whole clip (picture and all).
     strip_audio: bool = False
+    # Cross-dissolve into the NEXT clip on this track, in seconds (0 = no
+    # transition). Only meaningful (and only ever applied at render time)
+    # when a clip with start == self.end actually exists right after this
+    # one - a dangling value left over from a since-moved/deleted neighbor
+    # is simply ignored rather than erroring, same "ignore if now
+    # meaningless" spirit as strip_audio on a clip whose audio track was
+    # since deleted.
+    transition_out: float = 0.0
     effects: dict = field(default_factory=dict)
     # effects keys: scale_pct, pos_x, pos_y, rotate_deg, opacity, brightness,
     #               contrast, saturation, blur, speed
@@ -196,6 +204,18 @@ class Project:
     def clips_on(self, track_id: str) -> list[Clip]:
         return sorted((c for c in self.clips.values() if c.track_id == track_id),
                       key=lambda c: c.start)
+
+    def next_adjacent_clip(self, clip_id: str) -> Optional[Clip]:
+        """The clip on the same track whose start exactly meets this one's
+        end (no gap), or None - the only configuration a transition_out
+        cross-dissolve can actually apply to."""
+        c = self.clips.get(clip_id)
+        if not c:
+            return None
+        for other in self.clips_on(c.track_id):
+            if other.id != c.id and abs(other.start - c.end) < 0.01:
+                return other
+        return None
 
     def duration(self) -> float:
         return max((c.end for c in self.clips.values()), default=0.0)

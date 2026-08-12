@@ -147,6 +147,13 @@ class ClipItem(QGraphicsRectItem):
         menu.addAction("🔊 Unmute" if self.clip.muted else "🔇 Mute",
                        lambda: self.timeline.toggle_mute(self.clip.id))
         menu.addAction("🎛 Effects…", lambda: self.timeline.effectsRequested.emit(self.clip.id))
+        if self.kind == "video" and self.timeline.project.next_adjacent_clip(self.clip.id) is not None:
+            if self.clip.transition_out > 0:
+                menu.addAction("✕ Remove crossfade",
+                               lambda: self.timeline.set_transition(self.clip.id, 0.0))
+            else:
+                menu.addAction("🔀 Add crossfade to next clip…",
+                               lambda: self.timeline.add_transition_dialog(self.clip.id))
         media = self.timeline.project.media.get(self.clip.media_id)
         pipeline_id = (media.meta.get("pipeline_id") if media else "") or ""
         scene_id = (media.meta.get("scene_id") if media else "") or ""
@@ -785,6 +792,33 @@ class TimelineWidget(QWidget):
             after = {"start": max(0.0, c.start - gap)}
             self.undo_stack.push(ChangePropertiesCommand("Close gap", c, before, after, refresh))
         self.undo_stack.endMacro()
+
+    def add_transition_dialog(self, clip_id: str) -> None:
+        clip = self.project.clips.get(clip_id)
+        nxt = self.project.next_adjacent_clip(clip_id)
+        if not clip or not nxt:
+            return
+        max_overlap = max(0.1, min(clip.duration, nxt.duration) - 0.05)
+        from PySide6.QtWidgets import QInputDialog
+        value, ok = QInputDialog.getDouble(
+            self, "Add crossfade", "Overlap duration (seconds):",
+            min(0.5, max_overlap), 0.05, max_overlap, 2)
+        if ok:
+            self.set_transition(clip_id, value)
+
+    def set_transition(self, clip_id: str, overlap: float) -> None:
+        clip = self.project.clips.get(clip_id)
+        if not clip:
+            return
+        before = {"transition_out": clip.transition_out}
+        after = {"transition_out": max(0.0, overlap)}
+
+        def refresh():
+            self.project.dirty = True
+            self.view.viewport().update()
+
+        text = "Add crossfade" if overlap > 0 else "Remove crossfade"
+        self.undo_stack.push(ChangePropertiesCommand(text, clip, before, after, refresh))
 
     def add_media_at_playhead(self, media_id: str, track_id: str = "",
                               start: float | None = None, duration: float | None = None,

@@ -1678,6 +1678,85 @@ def test_timeline_close_gap_after_is_a_noop_without_a_gap(win):
         win.project.remove_media(img.id)
 
 
+def test_set_transition_is_undoable(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    b = win.project.add_clip(img.id, track.id, 3.0, 2.0)
+    try:
+        win.timeline.set_transition(a.id, 1.0)
+        assert a.transition_out == 1.0
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert a.transition_out == 0.0
+
+        win.undo_stack.redo()
+        assert a.transition_out == 1.0
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_clip(b.id)
+        win.project.remove_media(img.id)
+
+
+def test_add_transition_dialog_prompts_and_clamps_to_shorter_clip(win, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    b = win.project.add_clip(img.id, track.id, 3.0, 1.0)   # shorter clip caps the prompt's max
+    captured = {}
+
+    def fake_get_double(parent, title, label, value, min_value, max_value, decimals):
+        captured["max"] = max_value
+        return 0.8, True
+
+    monkeypatch.setattr(QInputDialog, "getDouble", fake_get_double)
+    try:
+        win.timeline.add_transition_dialog(a.id)
+
+        assert captured["max"] == pytest.approx(0.95)   # min(3.0, 1.0) - 0.05
+        assert a.transition_out == 0.8
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_clip(b.id)
+        win.project.remove_media(img.id)
+
+
+def test_add_transition_dialog_cancelled_leaves_transition_unset(win, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    b = win.project.add_clip(img.id, track.id, 3.0, 2.0)
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *a, **k: (0.5, False))
+    try:
+        win.timeline.add_transition_dialog(a.id)
+        assert a.transition_out == 0.0
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_clip(b.id)
+        win.project.remove_media(img.id)
+
+
+def test_add_transition_dialog_noop_without_a_next_clip(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    try:
+        win.timeline.add_transition_dialog(a.id)   # no next clip - must not crash or prompt
+        assert a.transition_out == 0.0
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_media(img.id)
+
+
 def test_track_at_position_finds_the_right_row(win):
     from prismcut.ui.panels.timeline import AUDIO_H, TRACK_H
 
