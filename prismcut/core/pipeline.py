@@ -77,6 +77,17 @@ class Scene:
     lipsync: SceneHistory = field(default_factory=SceneHistory)
     use_lipsync: bool = False
     clip_ids: dict = field(default_factory=dict)   # {"video": clip_id, "audio": clip_id}
+    # Per-scene overrides layered on top of the pipeline's image/video model
+    # default_params() at generation time (e.g. a shorter duration or lower
+    # resolution for one specific scene) - empty means "use the model's
+    # defaults, same as every other scene."
+    image_params: dict = field(default_factory=dict)
+    video_params: dict = field(default_factory=dict)
+    # Set by the orchestrator when this scene's most recent image/video/audio
+    # generation attempt failed (API error, moderation rejection, etc.) -
+    # cleared on the next successful attempt for that stage. "" means no
+    # error is currently outstanding, regardless of how many succeeded before.
+    last_error: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> "Scene":

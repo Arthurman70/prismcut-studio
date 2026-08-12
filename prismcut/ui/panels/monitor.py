@@ -61,9 +61,13 @@ class MonitorBase(QWidget):
                 self.stack.addWidget(self.video_widget)
                 self.player.positionChanged.connect(self._pos_changed)
                 self.player.durationChanged.connect(self._dur_changed)
+                self.player.mediaStatusChanged.connect(self._media_status_changed)
             except Exception:
                 self.player = None
         outer.addWidget(self.stack_host, 1)
+        # A seek requested before the player has finished opening its new
+        # source - see seek_seconds()'s docstring for why this exists.
+        self._pending_seek: float | None = None
 
         bar = QHBoxLayout()
         self.btn_play = QPushButton("▶")
@@ -153,8 +157,33 @@ class MonitorBase(QWidget):
             self.player.setPosition(int(v / 1000 * self.player.duration()))
 
     def seek_seconds(self, t: float):
-        if self.player:
+        """Loading a new source (setSource()) is asynchronous - a
+        setPosition() issued before the backend reports the media is
+        actually ready is silently dropped on most QtMultimedia backends,
+        which is the concrete cause of timeline scrub-preview freezing
+        (not displaying/advancing) whenever it crosses into a new scene's
+        clip: show_media() sets the new source, then preview_at() calls
+        this immediately after, too soon for the seek to take effect. Defer
+        to _media_status_changed when that's the case instead of dropping
+        the seek on the floor."""
+        if not self.player:
+            return
+        ready = (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia,
+                QMediaPlayer.MediaStatus.EndOfMedia)
+        if self.player.mediaStatus() in ready:
             self.player.setPosition(int(t * 1000))
+            self._pending_seek = None
+        else:
+            self._pending_seek = t
+
+    def _media_status_changed(self, status):
+        if self._pending_seek is None:
+            return
+        ready = (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia,
+                QMediaPlayer.MediaStatus.EndOfMedia)
+        if status in ready:
+            self.player.setPosition(int(self._pending_seek * 1000))
+            self._pending_seek = None
 
 
 class ClipMonitor(MonitorBase):

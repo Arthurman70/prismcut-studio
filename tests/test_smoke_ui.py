@@ -47,6 +47,39 @@ def test_main_window_boots_with_every_panel(win):
     assert win.movie is not None
 
 
+def test_main_applies_theme_with_real_settings_not_none(monkeypatch):
+    """Regression test: app.py used to call theme.apply_theme(app) with no
+    settings arg, so apply_theme's own "read the saved theme" branch never
+    ran and it always fell back to following the OS light/dark preference -
+    the "starts in light mode even with dark mode saved" bug."""
+    import prismcut.app as app_mod
+    from prismcut.core.settings import Settings
+    from prismcut.ui import theme as theme_mod
+    from prismcut.ui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])   # same idiom the win fixture uses
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0)
+    calls = []
+    real_apply_theme = theme_mod.apply_theme
+
+    def spy_apply_theme(qapp, settings=None):
+        calls.append(settings)
+        return real_apply_theme(qapp, settings)
+    monkeypatch.setattr(theme_mod, "apply_theme", spy_apply_theme)
+
+    before = set(app.topLevelWidgets())
+    try:
+        app_mod.main(app)   # pass the existing instance - only one QApplication per process
+        assert len(calls) == 1
+        assert calls[0] is not None
+        assert isinstance(calls[0], Settings)
+    finally:
+        for w in app.topLevelWidgets():
+            if w not in before and isinstance(w, MainWindow):
+                w.project.dirty = False
+                w.close()
+
+
 def test_shortcut_registry_populated_and_cheat_sheet_opens(win):
     from prismcut.core import shortcuts
     assert len(shortcuts.REGISTRY) > 10  # menu actions self-register via MainWindow._act
@@ -160,6 +193,87 @@ def test_toast_posts_to_overlay(win):
     win.toast("smoke test toast", "success", timeout_ms=60000)
     assert win._toast_overlay.isVisible()
     assert win._toast_overlay._lay.count() >= 1
+
+
+# --------------------------------------------------------------- monitor/seek
+
+class _FakePlayer:
+    """Stands in for QMediaPlayer so these tests exercise seek_seconds()'s
+    deferral LOGIC without depending on real media file decoding or codec
+    availability."""
+
+    def __init__(self, status=None):
+        self._status = status
+        self.positions = []
+
+    def mediaStatus(self):
+        return self._status
+
+    def setPosition(self, ms):
+        self.positions.append(ms)
+
+
+def test_monitor_seek_seconds_seeks_immediately_when_media_ready(win):
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    mon = win.project_monitor
+    if mon.player is None:
+        pytest.skip("QtMultimedia backend unavailable in this environment")
+    fake = _FakePlayer(QMediaPlayer.MediaStatus.LoadedMedia)
+    saved = mon.player
+    mon.player = fake
+    try:
+        mon.seek_seconds(2.5)
+        assert fake.positions == [2500]
+        assert mon._pending_seek is None
+    finally:
+        mon.player = saved
+
+
+def test_monitor_seek_seconds_defers_until_media_actually_loaded(win):
+    """The actual fix: a seek issued right after switching sources used to
+    be silently dropped because QtMultimedia loads media asynchronously -
+    the concrete cause of timeline scrub-preview freezing at scene
+    boundaries instead of showing/advancing into the next scene."""
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    mon = win.project_monitor
+    if mon.player is None:
+        pytest.skip("QtMultimedia backend unavailable in this environment")
+    fake = _FakePlayer(QMediaPlayer.MediaStatus.LoadingMedia)
+    saved = mon.player
+    mon.player = fake
+    try:
+        mon.seek_seconds(4.0)
+        assert fake.positions == []          # not applied yet - media isn't ready
+        assert mon._pending_seek == 4.0
+
+        mon._media_status_changed(QMediaPlayer.MediaStatus.LoadingMedia)   # still not ready
+        assert fake.positions == []
+        assert mon._pending_seek == 4.0
+
+        mon._media_status_changed(QMediaPlayer.MediaStatus.LoadedMedia)   # now ready
+        assert fake.positions == [4000]
+        assert mon._pending_seek is None
+    finally:
+        mon.player = saved
+
+
+def test_monitor_media_status_changed_is_a_noop_without_a_pending_seek(win):
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    mon = win.project_monitor
+    if mon.player is None:
+        pytest.skip("QtMultimedia backend unavailable in this environment")
+    fake = _FakePlayer()
+    saved = mon.player
+    mon.player = fake
+    mon._pending_seek = None
+    try:
+        mon._media_status_changed(QMediaPlayer.MediaStatus.LoadedMedia)
+        assert fake.positions == []
+    finally:
+        mon.player = saved
 
 
 def test_agent_mode_toggle_exists_and_is_off_by_default(win):
@@ -602,7 +716,7 @@ def test_regenerate_image_swaps_the_already_placed_timeline_clip(win):
     from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
 
     class FakeImageAdapter:
-        def generate_image(self, model_id, prompt, params):
+        def generate_image(self, model_id, prompt, params, refs=None):
             return [__file__]
 
     pipeline = MoviePipeline(name="Image regen test", brief="brief",
@@ -665,6 +779,274 @@ def test_regenerate_current_stage_regenerates_video_when_video_already_exists(wi
         new_clip = win.project.clips[scene.clip_ids["video"]]
         assert new_clip.id != old_clip.id
         assert new_clip.start == 2.0
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_image_params_override_merges_with_model_defaults(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = []
+
+    class CapturingImageAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            captured.append(dict(params))
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Param override test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.image_params = {"aspect_ratio": "9:16"}   # override just this one field
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: CapturingImageAdapter()
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: len(captured) == 1)
+        assert captured[0]["aspect_ratio"] == "9:16"
+        assert captured[0]["image_size"] == "1K"   # untouched model default still present
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_video_params_override_merges_with_model_defaults(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = []
+
+    class CapturingVideoAdapter:
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            captured.append(dict(params))
+            return __file__
+
+    pipeline = MoviePipeline(name="Video param override test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.video_params = {"duration": 3}   # shorter clip than the model's default of 6
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: CapturingVideoAdapter()
+    try:
+        win.movie.run.regenerate_scene_video(scene.id)
+        assert _wait_until(lambda: len(captured) == 1)
+        assert captured[0]["duration"] == 3
+        assert captured[0]["resolution"] == "720p"   # untouched model default still present
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_image_batch_generates_sequentially_with_reference_context(win):
+    """The actual feature: scene images generate one after another (never
+    in parallel), and each scene after the first gets earlier scenes'
+    images passed as reference context for visual consistency. This is a
+    single test for both properties, not two: if generation were still
+    running in parallel, a later scene's refs would come back empty/wrong
+    (the earlier scene wouldn't have finished yet to have an active image),
+    so correct refs are only possible if the chain is genuinely sequential."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = []
+
+    class FakeSequentialAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            calls.append(list(refs) if refs else [])
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Sequential test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1), new_scene(2)]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeSequentialAdapter()
+    try:
+        win.movie.run.run_image_batch()
+        assert _wait_until(lambda: all(s.image.active for s in pipeline.scenes), timeout=10.0)
+        assert len(calls) == 3
+        assert calls[0] == []                # scene 1: no earlier scenes to reference yet
+        assert len(calls[1]) == 1            # scene 2: references scene 1 (anchor == previous)
+        assert len(calls[2]) == 2            # scene 3: references scene 1 (anchor) + scene 2 (previous)
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_row_details_panel_prefills_and_saves_script_and_params(win):
+    """The per-scene review/edit panel (collapsible 'Details' section): it
+    should pre-fill the script box and both param forms from the scene's
+    current script/overrides, and 'Save changes' should write edits for all
+    three back onto the Scene object (which regeneration then reads)."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Details panel test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.script = "A lighthouse at dusk."
+    scene.image_params = {"aspect_ratio": "9:16"}
+    win.movie._set_pipeline(pipeline)
+    try:
+        row = win.movie._rows[scene.id]
+        # pre-filled from the scene, not the bare model defaults
+        assert row.script_edit.toPlainText() == "A lighthouse at dusk."
+        assert row.image_param_form is not None
+        assert row.image_param_form.widgets["aspect_ratio"].currentText() == "9:16"
+        assert row.image_param_form.widgets["image_size"].currentText() == "1K"  # model default
+        assert row.video_param_form is not None
+        assert row.video_param_form.widgets["duration"].value() == 6  # model default, no override yet
+
+        row.script_edit.setPlainText("A lighthouse at dawn instead.")
+        row.image_param_form.widgets["aspect_ratio"].setCurrentText("1:1")
+        row.video_param_form.widgets["duration"].setValue(3)
+        row._save_details()
+
+        assert scene.script == "A lighthouse at dawn instead."
+        assert scene.image_params["aspect_ratio"] == "1:1"
+        assert scene.image_params["image_size"] == "1K"   # untouched default captured too
+        assert scene.video_params["duration"] == 3
+        # sync() must not clobber the just-saved text back to some stale value
+        assert row.script_edit.toPlainText() == "A lighthouse at dawn instead."
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_run_image_batch_limit_queues_fewer_and_continue_finishes_the_rest(win):
+    """The batch-size/continue feature: limit=N only queues the next N
+    scenes still missing an image (lowest index first); calling
+    run_image_batch again afterwards - with no limit, or a bigger one -
+    picks up exactly where it left off, since the target filter is always
+    "still missing this stage", not some separate resume cursor."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = []
+
+    class FakeAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            calls.append(1)
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Limit test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1), new_scene(2)]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.movie.run.run_image_batch(limit=1)
+        # Wait on the actual completion signal (scene.image.active), not on
+        # calls (work() running on a worker thread completes before done()
+        # has marshaled back to the GUI thread and pushed the StageAsset) -
+        # the same distinction the sequential-context test above relies on.
+        assert _wait_until(lambda: pipeline.scenes[0].image.active is not None)
+        assert sum(1 for s in pipeline.scenes if s.image.active) == 1
+        assert len(calls) == 1
+        assert pipeline.status != "images_ready"   # stage not fully done yet
+
+        win.movie.run.run_image_batch()   # continue with the rest, no limit this time
+        assert _wait_until(lambda: all(s.image.active for s in pipeline.scenes), timeout=10.0)
+        assert len(calls) == 3
+        assert pipeline.status == "images_ready"
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_stage_buttons_relabel_as_scenes_progress(win):
+    """The dynamic Generate/Continue labeling that doubles as the 'continue
+    where I left off' affordance: no progress -> plain 'Generate', partial
+    progress -> 'Continue (N left)', full progress -> disabled checkmark."""
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Relabel test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1), new_scene(2)]
+    win.movie._set_pipeline(pipeline)
+    try:
+        assert win.movie.images_btn.text() == "🖼 Generate scene images"
+        assert win.movie.images_btn.isEnabled()
+
+        item = win.bin.add_generated(__file__, {"mode": "image"})
+        pipeline.scenes[0].image.push(StageAsset(media_id=item.id, source="generated"))
+        win.movie._sync_buttons()
+        assert win.movie.images_btn.text() == "🖼 Continue images (2 left)"
+        assert win.movie.images_btn.isEnabled()
+
+        for s in pipeline.scenes[1:]:
+            s.image.push(StageAsset(media_id=item.id, source="generated"))
+        win.movie._sync_buttons()
+        assert win.movie.images_btn.text() == "🖼 ✓ All scene images generated"
+        assert not win.movie.images_btn.isEnabled()
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_batch_wording_reports_limited_vs_all_remaining(win):
+    assert win.movie._batch_wording(12, None) == "all 12 remaining"
+    assert win.movie._batch_wording(12, 5) == "5 of 12 remaining"
+    assert win.movie._batch_wording(12, 100) == "all 12 remaining"   # limit > remaining
+
+
+def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
+    """The failure-visibility + retry-after-rejection feature: a failed
+    generation (moderation rejection, API constraint, etc.) sets
+    scene.last_error, which the row surfaces as a distinct icon plus a
+    persistent (not tooltip-only) message rather than looking merely
+    "still pending" - and a subsequent successful retry clears both."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+    from prismcut.ui.widgets.common import STATUS_ICONS
+
+    class FailThenSucceedAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_image(self, model_id, prompt, params, refs=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("rejected by moderation")
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Failure test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    win.tabs.setCurrentWidget(win.movie)   # isVisible() below reflects real tab visibility
+    adapter = FailThenSucceedAdapter()
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: adapter
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: bool(scene.last_error))
+        assert "rejected by moderation" in scene.last_error
+
+        row = win.movie._rows[scene.id]
+        assert row.error_label.isVisible()
+        assert "rejected by moderation" in row.error_label.text()
+        assert row.icon.text() == STATUS_ICONS["error"]
+
+        win.movie.run.regenerate_scene_image(scene.id)   # retry, same prompt this time succeeds
+        assert _wait_until(lambda: scene.image.active is not None)
+        assert scene.last_error == ""
+        assert not row.error_label.isVisible()
+        assert row.icon.text() != STATUS_ICONS["error"]
     finally:
         win.get_adapter = saved_get_adapter
         win.movie._set_pipeline(MoviePipeline(name="empty"))
@@ -738,7 +1120,7 @@ def test_regenerate_pipeline_scene_uses_currently_loaded_pipeline_directly(win):
     from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
 
     class FakeImageAdapter:
-        def generate_image(self, model_id, prompt, params):
+        def generate_image(self, model_id, prompt, params, refs=None):
             return [__file__]
 
     pipeline = MoviePipeline(name="Direct regen test", brief="brief",

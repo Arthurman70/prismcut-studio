@@ -10,20 +10,27 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QPushButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QPlainTextEdit,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from ...core import media as media_utils
 from ...core import paths
 from ...core.pipeline import MoviePipeline, Scene
 from ...core.pipeline_orchestrator import PipelineRun
 from ..dialogs.new_pipeline_dialog import NewPipelineDialog
-from ..widgets.common import STATUS_ICONS, DropAcceptor, accent_button, confirm_destructive, label
+from ..widgets.common import (STATUS_ICONS, CollapsibleSection, DropAcceptor, accent_button,
+                              confirm_destructive, label)
+from .generate_panel import ParamForm
 
 BUSY_STATUSES = ("images_running", "video_running")
 
 
 def _scene_status_icon(scene: Scene) -> str:
+    # Checked first regardless of what's already been generated: a scene
+    # whose most recent attempt (any stage) failed needs attention even if
+    # an earlier stage succeeded, e.g. a good image but a rejected video.
+    if scene.last_error:
+        return STATUS_ICONS["error"]
     if scene.video.active:
         return STATUS_ICONS["done"]
     if scene.image.active:
@@ -40,8 +47,11 @@ class SceneRow(QWidget):
         self.run = run
         self.scene = scene
 
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(4, 3, 4, 3)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 3, 4, 3)
+        outer.setSpacing(2)
+
+        lay = QHBoxLayout()
 
         self.thumb = QLabel()
         self.thumb.setFixedSize(64, 40)
@@ -66,8 +76,6 @@ class SceneRow(QWidget):
 
         self.regen_btn = QPushButton("🔄")
         self.regen_btn.setFixedSize(26, 24)
-        self.regen_btn.setToolTip("Regenerate this scene (uses the prompt above) - redoes the "
-                                  "video if one exists yet, otherwise the image")
         self.regen_btn.clicked.connect(self._regenerate)
 
         lay.addWidget(self.thumb)
@@ -75,6 +83,22 @@ class SceneRow(QWidget):
         lay.addWidget(self.title, 1)
         lay.addWidget(self.edit_btn)
         lay.addWidget(self.regen_btn)
+        outer.addLayout(lay)
+
+        # Persistent (not tooltip-only) failure notice - set/cleared by
+        # sync() from scene.last_error, which the orchestrator writes on any
+        # stage's generation failure (API error, moderation rejection, ...).
+        # Visible without expanding Details, since knowing a scene needs a
+        # retry is the whole point.
+        self.error_label = label("", dim=False)
+        self.error_label.setWordWrap(True)
+        self.error_label.setVisible(False)
+        outer.addWidget(self.error_label)
+
+        self.details = self._build_details()
+        self.section = CollapsibleSection("Details — script & generation params", self.details,
+                                          expanded=False)
+        outer.addWidget(self.section)
 
         self.setToolTip("Drop an image here to use it as this scene's picture instead of "
                         "generating one - AI generation for this scene is then skipped.")
@@ -82,6 +106,57 @@ class SceneRow(QWidget):
 
         run.sceneChanged.connect(self._on_scene_changed)
         self.sync()
+
+    def _build_details(self) -> QWidget:
+        """Reviewable/editable script + per-scene image/video param overrides
+        (Scene.image_params/video_params, layered onto the model's own
+        defaults at generation time - see pipeline_orchestrator._generate_
+        scene_image/_video). Built once per row since the pipeline's chosen
+        image/video models don't change after the movie is created."""
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(4, 4, 4, 4)
+        v.setSpacing(4)
+
+        v.addWidget(label("Script / visual prompt", dim=True))
+        self.script_edit = QPlainTextEdit(self.scene.script)
+        self.script_edit.setMaximumHeight(90)
+        self.script_edit.setPlaceholderText("Describe what happens in this scene…")
+        v.addWidget(self.script_edit)
+
+        self.image_param_form = None
+        self.video_param_form = None
+        registry = self.run.win.registry
+        image_model = registry.by_key(self.run.pipeline.image_model)
+        if image_model and image_model.params:
+            v.addWidget(label("Image generation parameters", dim=True))
+            self.image_param_form = ParamForm()
+            self.image_param_form.build(image_model, self.scene.image_params)
+            v.addWidget(self.image_param_form)
+
+        video_model = registry.by_key(self.run.pipeline.video_model)
+        if video_model and video_model.params:
+            v.addWidget(label("Video generation parameters (length, quality, ...)", dim=True))
+            self.video_param_form = ParamForm()
+            self.video_param_form.build(video_model, self.scene.video_params)
+            v.addWidget(self.video_param_form)
+
+        save_btn = QPushButton("💾 Save changes")
+        save_btn.setToolTip("Saves the script and any parameter overrides above - applied next "
+                            "time this scene is (re)generated.")
+        save_btn.clicked.connect(self._save_details)
+        v.addWidget(save_btn)
+        return host
+
+    def _save_details(self):
+        self.scene.script = self.script_edit.toPlainText()
+        if self.image_param_form is not None:
+            self.scene.image_params = self.image_param_form.values()
+        if self.video_param_form is not None:
+            self.scene.video_params = self.video_param_form.values()
+        self.run.pipeline.save()
+        self.sync()
+        self.run.win.toast(f"Scene {self.scene.index + 1} changes saved.", "success")
 
     def _on_scene_changed(self, scene_id: str):
         if scene_id == self.scene.id:
@@ -97,6 +172,24 @@ class SceneRow(QWidget):
         media = self.run.win.project.media.get(img.media_id) if img else None
         thumb_path = media_utils.thumbnail(media.path) if media else None
         self.thumb.setPixmap(QPixmap(str(thumb_path)) if thumb_path else QPixmap())
+        if self.scene.last_error:
+            from .. import theme
+            self.error_label.setText(f"⚠ {self.scene.last_error}")
+            self.error_label.setStyleSheet(f"color:{theme.DANGER};")
+            self.error_label.setVisible(True)
+            self.regen_btn.setToolTip("Retry this scene - if it was rejected by moderation or "
+                                      "an API constraint, edit the script/prompt in Details "
+                                      "below first, then click to try again.")
+        else:
+            self.error_label.setVisible(False)
+            self.regen_btn.setToolTip("Regenerate this scene (uses the prompt above) - redoes "
+                                      "the video if one exists yet, otherwise the image")
+        # Don't clobber an in-progress inline edit: a job finishing for this
+        # scene fires sceneChanged -> sync() while the user may be mid-edit
+        # in script_edit (e.g. regenerating video while tweaking the next
+        # scene's script). A focused field means the user owns its text.
+        if not self.script_edit.hasFocus() and self.script_edit.toPlainText() != self.scene.script:
+            self.script_edit.setPlainText(self.scene.script)
 
     def _edit_prompt(self):
         text, ok = QInputDialog.getMultiLineText(
@@ -163,15 +256,28 @@ class MoviePipelinePanel(QWidget):
         outer.addWidget(self.retry_script_btn)
         self._script_running = False
 
+        size_row = QHBoxLayout()
+        size_row.addWidget(label("Batch size:", dim=True))
+        self.batch_size_combo = QComboBox()
+        self.batch_size_combo.addItem("1 scene", 1)
+        self.batch_size_combo.addItem("5 scenes", 5)
+        self.batch_size_combo.addItem("10 scenes", 10)
+        self.batch_size_combo.addItem("All remaining", None)
+        self.batch_size_combo.setCurrentIndex(3)
+        self.batch_size_combo.setToolTip(
+            "How many scenes each click of Generate/Continue below queues - pick a small "
+            "number to preview style/quality on a few scenes before committing to the full "
+            "(and most expensive) batch. Generate/Continue always picks up with whichever "
+            "scenes still need that stage, in order, so this doubles as resuming a "
+            "previous run.")
+        size_row.addWidget(self.batch_size_combo)
+        size_row.addStretch(1)
+        outer.addLayout(size_row)
+
         stage_row = QHBoxLayout()
-        self.images_btn = accent_button("🖼 Generate all scene images")
-        self.images_btn.setToolTip("Stage 1 of 2 — queues one image-generation call per "
-                                   "scene that doesn't already have an image.")
+        self.images_btn = accent_button("🖼 Generate scene images")
         self.images_btn.clicked.connect(self._run_images)
-        self.video_btn = accent_button("🎥 Generate all scene video")
-        self.video_btn.setToolTip("Stage 2 of 2 (most expensive) — queues one video "
-                                  "generation per scene, plus a lip-sync pass per scene "
-                                  "if a lip-sync model is configured.")
+        self.video_btn = accent_button("🎥 Generate scene video")
         self.video_btn.clicked.connect(self._run_video)
         stage_row.addWidget(self.images_btn)
         stage_row.addWidget(self.video_btn)
@@ -309,6 +415,31 @@ class MoviePipelinePanel(QWidget):
             return
         self.win.tabs.setCurrentIndex(0)   # Edit tab, where the timeline lives
 
+    def _batch_limit(self) -> int | None:
+        return self.batch_size_combo.currentData()
+
+    def _relabel_stage_button(self, btn: QPushButton, icon: str, noun: str, total: int,
+                              remaining: int, stage_label: str) -> None:
+        """Shared by the images/video buttons: 'Generate' before anything in
+        this stage exists, 'Continue (N left)' once some scenes have it but
+        not all, disabled with a checkmark once the whole stage is done -
+        the dynamic labeling IS the "continue where I left off" affordance,
+        no separate resume button needed since Generate/Continue always
+        only targets scenes still missing this stage."""
+        done = total - remaining
+        if total == 0 or done == 0:
+            btn.setText(f"{icon} Generate scene {noun}")
+            btn.setToolTip(f"{stage_label} — queues one {noun[:-1]}-generation call per scene, "
+                           "honoring the batch size above.")
+        elif remaining == 0:
+            btn.setText(f"{icon} ✓ All scene {noun} generated")
+            btn.setToolTip(f"Every scene already has {noun} - use a scene row's 🔄 to regenerate "
+                           "an individual one.")
+        else:
+            btn.setText(f"{icon} Continue {noun} ({remaining} left)")
+            btn.setToolTip(f"{stage_label} — {done}/{total} scenes done. Queues the next batch "
+                           "of scenes still missing this stage, honoring the batch size above.")
+
     def _sync_buttons(self):
         has_run = self.run is not None
         p = self.run.pipeline if has_run else None
@@ -317,9 +448,16 @@ class MoviePipelinePanel(QWidget):
         else:
             self.summary.setText("No movie loaded yet — click “New movie…” to describe one.")
         busy = bool(p and p.status in BUSY_STATUSES)
-        self.images_btn.setEnabled(bool(p and p.scenes) and not busy)
+        total = len(p.scenes) if p else 0
+        images_remaining = sum(1 for s in p.scenes if s.image.active is None) if p else 0
+        video_remaining = sum(1 for s in p.scenes if s.video.active is None) if p else 0
+        self._relabel_stage_button(self.images_btn, "🖼", "images", total, images_remaining,
+                                   "Stage 1 of 2")
+        self._relabel_stage_button(self.video_btn, "🎥", "video", total, video_remaining,
+                                   "Stage 2 of 2 (most expensive)")
+        self.images_btn.setEnabled(bool(p and p.scenes) and images_remaining > 0 and not busy)
         self.video_btn.setEnabled(bool(p and p.scenes and any(s.image.active for s in p.scenes))
-                                  and not busy)
+                                  and video_remaining > 0 and not busy)
         needs_script = bool(p and not p.scenes)
         self.retry_script_btn.setVisible(needs_script)
         self.retry_script_btn.setEnabled(needs_script and not self._script_running)
@@ -332,6 +470,14 @@ class MoviePipelinePanel(QWidget):
         elif not needs_script:
             self.script_status.setText("")
 
+    @staticmethod
+    def _batch_wording(remaining: int, limit: int | None) -> str:
+        """A phrase describing how many scenes will actually be queued -
+        shared by both gate confirmations so a limited batch's dialog says
+        "3 of 12" rather than the misleading full remaining count."""
+        n = remaining if limit is None else min(remaining, limit)
+        return f"all {n} remaining" if n == remaining else f"{n} of {remaining} remaining"
+
     # ---------------------------------------------------------------- gates
     def _run_images(self):
         if not self.run:
@@ -340,18 +486,20 @@ class MoviePipelinePanel(QWidget):
             self.status.emit("No scenes to generate images for yet - the script breakdown "
                              "hasn't produced any scenes.")
             return
-        n = sum(1 for s in self.run.pipeline.scenes if s.image.active is None)
-        if n == 0:
+        remaining = sum(1 for s in self.run.pipeline.scenes if s.image.active is None)
+        if remaining == 0:
             self.status.emit("Every scene already has an image.")
             return
+        limit = self._batch_limit()
+        phrase = self._batch_wording(remaining, limit)
         if not confirm_destructive(
                 self.win, self.settings, "pipeline_run_image_batch",
                 "Generate scene images",
-                f"This queues {n} image-generation call(s), one per scene, using your "
-                "configured image model. Each call spends your own API credits. Continue?",
+                f"This queues {phrase} scene(s) for image generation, using your configured "
+                "image model. Each call spends your own API credits. Continue?",
                 "Generate"):
             return
-        self.run.run_image_batch()
+        self.run.run_image_batch(limit=limit)
 
     def _run_video(self):
         if not self.run:
@@ -360,16 +508,18 @@ class MoviePipelinePanel(QWidget):
             self.status.emit("No scenes to generate video for yet - the script breakdown "
                              "hasn't produced any scenes.")
             return
-        n = sum(1 for s in self.run.pipeline.scenes if s.video.active is None)
-        if n == 0:
+        remaining = sum(1 for s in self.run.pipeline.scenes if s.video.active is None)
+        if remaining == 0:
             self.status.emit("Every scene already has a video.")
             return
+        limit = self._batch_limit()
+        phrase = self._batch_wording(remaining, limit)
         lipsync_note = (" plus a lip-sync pass" if self.run.pipeline.lipsync_model else "")
         if not confirm_destructive(
                 self.win, self.settings, "pipeline_run_video_batch",
                 "Generate scene video",
-                f"This queues {n} video-generation call(s){lipsync_note}, one per scene — "
-                "the most expensive stage. Each call spends your own API credits. Continue?",
+                f"This queues {phrase} scene(s) for video generation{lipsync_note} — the most "
+                "expensive stage. Each call spends your own API credits. Continue?",
                 "Generate"):
             return
-        self.run.run_video_batch()
+        self.run.run_video_batch(limit=limit)

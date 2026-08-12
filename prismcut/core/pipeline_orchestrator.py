@@ -162,9 +162,19 @@ class PipelineRun(QObject):
                              work, kind="chat", on_done=done, on_fail=fail)
 
     # ------------------------------------------------------- stage 3: images (gate 1)
-    def run_image_batch(self, on_all_done: Optional[Callable] = None) -> None:
+    def run_image_batch(self, on_all_done: Optional[Callable] = None,
+                        limit: Optional[int] = None) -> None:
+        """limit caps how many of the still-missing scenes get queued this
+        call (lowest scene index first) instead of always doing every
+        remaining one - lets the UI offer "just the next scene" or "next 5"
+        as well as "all remaining". Calling this again later only ever
+        targets scenes still missing an image, so it doubles as "continue
+        where I left off" with no separate resume path needed."""
         model, adapter = self._adapter_for(self.pipeline.image_model)
-        targets = [s for s in self.pipeline.scenes if s.image.active is None]
+        targets = sorted((s for s in self.pipeline.scenes if s.image.active is None),
+                         key=lambda s: s.index)
+        if limit is not None:
+            targets = targets[:limit]
         if not targets:
             self._images_done = True
             self._maybe_insert_all_interim()
@@ -173,18 +183,63 @@ class PipelineRun(QObject):
             return
         self._set_status("images_running")
         tracker = _BatchTracker(len(targets), lambda: self._images_batch_done(on_all_done))
-        for scene in targets:
-            self._generate_scene_image(scene, model, adapter, tracker)
+        self._run_image_chain(targets, model, adapter, tracker)
+
+    def _run_image_chain(self, remaining: list, model, adapter, tracker: _BatchTracker) -> None:
+        """Generates scene images ONE AT A TIME, in scene order, instead of
+        firing every scene's job in parallel - each scene after the first
+        passes reference images from earlier scenes (see
+        _image_context_refs) so the model has visual context to keep
+        character/outfit/art-style appearance consistent across the whole
+        movie, rather than every scene being generated in isolation with no
+        knowledge of what came before. This necessarily makes the batch take
+        longer wall-clock time than running everything in parallel would -
+        an inherent tradeoff of the earlier-scenes-as-context requirement,
+        not an oversight."""
+        if not remaining:
+            return
+        scene, rest = remaining[0], remaining[1:]
+        refs = self._image_context_refs(scene)
+
+        def advance():
+            self._run_image_chain(rest, model, adapter, tracker)
+
+        self._generate_scene_image(scene, model, adapter, tracker, extra_refs=refs,
+                                   on_settled=advance)
+
+    def _image_context_refs(self, scene: Scene) -> list:
+        """Reference image paths for visual continuity: the first EARLIER
+        scene that has an image (an anchor, resisting gradual drift across a
+        long chain of "feed the last output back in") plus the immediately
+        preceding scene with an image (for local continuity) - deduplicated
+        when they're the same scene. Works whether an earlier scene's image
+        came from generation or a user's draftboard override, since both
+        just set scene.image.active the same way."""
+        earlier = sorted((s for s in self.pipeline.scenes
+                         if s.index < scene.index and s.image.active), key=lambda s: s.index)
+        if not earlier:
+            return []
+        picks = {earlier[0].id: earlier[0], earlier[-1].id: earlier[-1]}   # anchor + previous
+        refs = []
+        for s in sorted(picks.values(), key=lambda s: s.index):
+            item = self.win.project.media.get(s.image.active.media_id)
+            if item:
+                refs.append(item.path)
+        return refs
 
     def regenerate_scene_image(self, scene_id: str, prompt_override: str = "") -> None:
         """Single-scene regenerate, bypassing the batch/gate - used by the
-        per-row Regenerate button, not the bulk action."""
+        per-row Regenerate button, not the bulk action. Still passes the
+        same earlier-scenes reference context as the batch chain, so a
+        regenerated scene stays visually consistent with the rest of the
+        movie too."""
         scene = self.pipeline.scene(scene_id)
         if not scene:
             return
         model, adapter = self._adapter_for(self.pipeline.image_model)
         tracker = _BatchTracker(1, lambda: None)
-        self._generate_scene_image(scene, model, adapter, tracker, prompt_override)
+        refs = self._image_context_refs(scene)
+        self._generate_scene_image(scene, model, adapter, tracker, prompt_override, extra_refs=refs)
 
     def regenerate_scene_current_stage(self, scene_id: str) -> None:
         """Regenerates whichever stage this scene is CURRENTLY showing on
@@ -202,12 +257,15 @@ class PipelineRun(QObject):
             self.regenerate_scene_image(scene_id)
 
     def _generate_scene_image(self, scene: Scene, model, adapter, tracker: _BatchTracker,
-                              prompt_override: str = "") -> None:
+                              prompt_override: str = "", extra_refs: Optional[list] = None,
+                              on_settled: Optional[Callable] = None) -> None:
         prompt = prompt_override or scene.script or self.pipeline.brief
+        params = {**model.default_params(), **scene.image_params}
+        refs = list(extra_refs) if extra_refs else None
 
         def work(job):
             job.progress(-1, f"Scene {scene.index + 1}: image")
-            return adapter.generate_image(model.id, prompt, model.default_params())
+            return adapter.generate_image(model.id, prompt, params, refs)
 
         def done(result):
             outs = result or []
@@ -217,6 +275,7 @@ class PipelineRun(QObject):
                     "source": "pipeline", "pipeline_id": self.pipeline.id, "scene_id": scene.id})
                 scene.image.push(StageAsset(media_id=item.id, prompt=prompt, provider=model.provider,
                                             model=model.id, source="generated", created=time.time()))
+                scene.last_error = ""
                 if "image" in scene.clip_ids and "video" not in scene.clip_ids:
                     # A regenerate, not this scene's first-ever image - it's
                     # already sitting on the timeline, so swap the stale one
@@ -226,13 +285,27 @@ class PipelineRun(QObject):
                     # leave the timeline alone - only scene.image.active (a
                     # future video regenerate's input) changes.
                     self._swap_scene_visual_clip(scene, item, "image", "update image")
-                self.sceneChanged.emit(scene.id)
-                self.pipeline.save()
+            else:
+                # The job itself didn't raise (so fail() below never fires),
+                # but came back with nothing to show for it - the shape a
+                # silent moderation/content-policy rejection often takes.
+                # Surface it the same as a hard failure rather than leaving
+                # the scene looking merely "still pending".
+                scene.last_error = "No image returned - possibly rejected by moderation or API constraints."
+            self.sceneChanged.emit(scene.id)
+            self.pipeline.save()
             tracker.one_done(bool(outs), "" if outs else "No image returned.")
+            if on_settled:
+                on_settled()
 
         def fail(msg):
             self.logMessage.emit(f"Scene {scene.index + 1} image failed: {msg}")
+            scene.last_error = msg
+            self.sceneChanged.emit(scene.id)
+            self.pipeline.save()
             tracker.one_done(False, msg)
+            if on_settled:
+                on_settled()
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: image", work, kind="image",
                              on_done=done, on_fail=fail)
@@ -257,9 +330,16 @@ class PipelineRun(QObject):
 
     def _images_batch_done(self, on_all_done: Optional[Callable]) -> None:
         self._images_done = True
+        remaining = sum(1 for s in self.pipeline.scenes if s.image.active is None)
         if self.pipeline.status == "images_running":
-            self._set_status("images_ready")
-        self.logMessage.emit("All scene images ready.")
+            # Only claim the images stage is fully "ready" once every scene
+            # actually has one - a limited/partial batch settling just
+            # returns to "scenes_ready" (not busy, more images still queued
+            # on the next Continue) rather than falsely reporting done.
+            self._set_status("images_ready" if remaining == 0 else "scenes_ready")
+        self.logMessage.emit("All scene images ready." if remaining == 0 else
+                             f"{len(self.pipeline.scenes) - remaining} scene image(s) ready, "
+                             f"{remaining} still to go.")
         self._maybe_insert_all_interim()
         if on_all_done:
             on_all_done()
@@ -301,12 +381,16 @@ class PipelineRun(QObject):
                 "source": "pipeline", "pipeline_id": self.pipeline.id, "scene_id": scene.id})
             scene.audio.push(StageAsset(media_id=item.id, prompt=text, provider=model.provider,
                                         model=model.id, source="generated", created=time.time()))
+            scene.last_error = ""
             self.sceneChanged.emit(scene.id)
             self.pipeline.save()
             tracker.one_done(True)
 
         def fail(msg):
             self.logMessage.emit(f"Scene {scene.index + 1} audio failed: {msg}")
+            scene.last_error = msg
+            self.sceneChanged.emit(scene.id)
+            self.pipeline.save()
             tracker.one_done(False, msg)
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: audio", work, kind="tts",
@@ -356,11 +440,17 @@ class PipelineRun(QObject):
         self.logMessage.emit("Scenes laid out on the timeline.")
 
     # ---------------------------------------------- stage 6: video + lip-sync (gate 2)
-    def run_video_batch(self, on_all_done: Optional[Callable] = None) -> None:
+    def run_video_batch(self, on_all_done: Optional[Callable] = None,
+                        limit: Optional[int] = None) -> None:
+        """See run_image_batch's docstring - same limit/continue semantics,
+        applied to the video (+ optional lip-sync) stage."""
         plan = resolve_video_plan(self.win.registry, self.pipeline.video_model,
                                   self.pipeline.lipsync_model)
         video_adapter = self.win.get_adapter(plan.video_model.provider)
-        targets = [s for s in self.pipeline.scenes if s.video.active is None]
+        targets = sorted((s for s in self.pipeline.scenes if s.video.active is None),
+                         key=lambda s: s.index)
+        if limit is not None:
+            targets = targets[:limit]
         if not targets:
             if on_all_done:
                 on_all_done()
@@ -401,6 +491,7 @@ class PipelineRun(QObject):
         # or lip-sync-declined scene shouldn't have sync forced on it.
         native_audio_path = (aud_item.path if plan.native_audio and scene.use_lipsync
                              and aud_item else None)
+        params = {**video_model.default_params(), **scene.video_params}
 
         def work(job):
             job.progress(-1, f"Scene {scene.index + 1}: video")
@@ -414,8 +505,7 @@ class PipelineRun(QObject):
                 # and isn't handed an argument it would reject with a
                 # TypeError.
                 kwargs["audio"] = native_audio_path
-            return video_adapter.generate_video(
-                video_model.id, prompt, video_model.default_params(), **kwargs)
+            return video_adapter.generate_video(video_model.id, prompt, params, **kwargs)
 
         def done(video_path):
             item = self.win.bin.add_generated(str(video_path), {
@@ -424,6 +514,7 @@ class PipelineRun(QObject):
                 "scene_id": scene.id})
             scene.video.push(StageAsset(media_id=item.id, prompt=prompt, provider=video_model.provider,
                                         model=video_model.id, source="generated", created=time.time()))
+            scene.last_error = ""
             if plan.lipsync_model and scene.use_lipsync:
                 self._chain_lipsync(scene, item, plan.lipsync_model, tracker)
             else:
@@ -433,6 +524,9 @@ class PipelineRun(QObject):
 
         def fail(msg):
             self.logMessage.emit(f"Scene {scene.index + 1} video failed: {msg}")
+            scene.last_error = msg
+            self.pipeline.save()
+            self.sceneChanged.emit(scene.id)
             tracker.one_done(False, msg)
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: video", work, kind="video",
@@ -523,8 +617,14 @@ class PipelineRun(QObject):
         return total
 
     def _video_batch_done(self, on_all_done: Optional[Callable]) -> None:
-        self._set_status("done")
-        self.logMessage.emit("Movie complete.")
+        remaining = sum(1 for s in self.pipeline.scenes if s.video.active is None)
+        if remaining == 0:
+            self._set_status("done")
+            self.logMessage.emit("Movie complete.")
+        else:
+            self._set_status("images_ready")   # not busy; video stage still has scenes left
+            self.logMessage.emit(f"{len(self.pipeline.scenes) - remaining} scene video(s) ready, "
+                                 f"{remaining} still to go.")
         if on_all_done:
             on_all_done()
 

@@ -10,6 +10,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +28,40 @@ jobs:
 
       - name: Build with PyInstaller
         run: pyinstaller packaging/prismcut.spec --noconfirm
+
+      # --- code signing: PrismCut.exe --------------------------------------
+      # Free OSS Authenticode signing via SignPath Foundation
+      # (https://signpath.org) - gated on SIGNPATH_ORGANIZATION_ID being
+      # configured so this is a no-op until the project's application is
+      # approved and repo Settings -> Secrets and variables -> Actions has
+      # SIGNPATH_API_TOKEN (secret) plus SIGNPATH_ORGANIZATION_ID /
+      # SIGNPATH_PROJECT_SLUG / SIGNPATH_SIGNING_POLICY_SLUG (variables)
+      # filled in with the values SignPath issues on approval.
+      - name: Upload unsigned exe for signing
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        id: upload-unsigned-exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismCut-unsigned-exe
+          path: dist/PrismCut/PrismCut.exe
+          retention-days: 1
+
+      - name: Sign PrismCut.exe
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ vars.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          github-artifact-id: '${{ steps.upload-unsigned-exe.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/exe'
+
+      - name: Replace exe with signed copy
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        shell: pwsh
+        run: Copy-Item -Path "signed\exe\PrismCut.exe" -Destination "dist\PrismCut\PrismCut.exe" -Force
 
       - name: Zip build
         run: Compress-Archive -Path dist/PrismCut -DestinationPath PrismCut-windows-x64.zip
@@ -55,6 +90,39 @@ jobs:
         shell: pwsh
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.ver.outputs.version }} packaging\installer.iss
+
+      # --- code signing: installer ------------------------------------------
+      # Same SignPath signing, applied to the installer exe itself (the file
+      # most users actually download and run) - see the comment above the
+      # PrismCut.exe signing steps for setup details.
+      - name: Upload unsigned installer for signing
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        id: upload-unsigned-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismCut-Setup-unsigned
+          path: dist/installer/*.exe
+          retention-days: 1
+
+      - name: Sign installer
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: '${{ vars.SIGNPATH_PROJECT_SLUG }}'
+          signing-policy-slug: '${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}'
+          github-artifact-id: '${{ steps.upload-unsigned-installer.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: 'signed/installer'
+
+      - name: Replace installer with signed copy
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        shell: pwsh
+        run: |
+          Get-ChildItem "signed\installer\*.exe" | ForEach-Object {
+            Copy-Item $_.FullName -Destination "dist\installer\" -Force
+          }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

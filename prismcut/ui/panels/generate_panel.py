@@ -35,33 +35,38 @@ class ParamForm(QWidget):
         self.form.setContentsMargins(0, 0, 0, 0)
         self.widgets: dict[str, QWidget] = {}
 
-    def build(self, spec: ModelSpec | None):
+    def build(self, spec: ModelSpec | None, overrides: dict | None = None):
+        """overrides pre-fills fields from a saved dict (e.g. a per-scene
+        Scene.image_params/video_params override) instead of the model's
+        bare defaults - same param names, so a plain dict.get(name, default)
+        per field is all that's needed."""
         while self.form.rowCount():
             self.form.removeRow(0)
         self.widgets.clear()
+        overrides = overrides or {}
         for p in (spec.params if spec else []):
             t = p.get("type", "text")
             name = p["name"]
             if t == "int":
                 w = QSpinBox()
                 w.setRange(int(p.get("min", -1)), int(p.get("max", 1 << 31 - 1)))
-                w.setValue(int(p.get("default", 0)))
+                w.setValue(int(overrides.get(name, p.get("default", 0))))
             elif t == "float":
                 w = QDoubleSpinBox()
                 w.setRange(float(p.get("min", 0)), float(p.get("max", 100)))
                 w.setSingleStep(float(p.get("step", 0.1)))
-                w.setValue(float(p.get("default", 0)))
+                w.setValue(float(overrides.get(name, p.get("default", 0))))
             elif t == "choice":
                 w = QComboBox()
                 for c in p.get("choices", []):
                     w.addItem(str(c))
-                w.setCurrentText(str(p.get("default", "")))
+                w.setCurrentText(str(overrides.get(name, p.get("default", ""))))
                 w.setEditable(True)
             elif t == "bool":
                 w = QCheckBox()
-                w.setChecked(bool(p.get("default", False)))
+                w.setChecked(bool(overrides.get(name, p.get("default", False))))
             else:
-                w = QLineEdit(str(p.get("default", "")))
+                w = QLineEdit(str(overrides.get(name, p.get("default", ""))))
             self.widgets[name] = w
             self.form.addRow(p.get("label", name), w)
 
