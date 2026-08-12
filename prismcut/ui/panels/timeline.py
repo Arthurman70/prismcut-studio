@@ -213,9 +213,14 @@ class TimelineView(QGraphicsView):
         menu.addAction("＋ Add video track", lambda: self.timeline._add_track("video"))
         menu.addAction("＋ Add audio track", lambda: self.timeline._add_track("audio"))
         menu.addSeparator()
-        t = self.mapToScene(ev.pos()).x() / self.timeline.pps
+        scene_pos = self.mapToScene(ev.pos())
+        t = scene_pos.x() / self.timeline.pps
         menu.addAction(f"Move playhead here ({_fmt(max(0.0, t))})",
                        lambda: self.timeline.set_playhead(max(0.0, t)))
+        track = self.timeline.track_at_position(scene_pos.y())
+        if track is not None and self.timeline.project.gap_at(track.id, max(0.0, t)):
+            menu.addAction("⇤ Close gap",
+                           lambda: self.timeline.close_gap_after(track.id, max(0.0, t)))
         menu.exec(ev.globalPos())
 
 
@@ -488,6 +493,19 @@ class TimelineWidget(QWidget):
     def total_height(self) -> float:
         return sum(TRACK_H if t.kind == "video" else AUDIO_H for t in self.ordered_tracks())
 
+    def track_at_position(self, y: float):
+        """The single track whose row contains `y` - unlike
+        nearest_track_y()/track_at_y(), this isn't filtered to a specific
+        kind and isn't a "nearest" search, since callers (the empty-space
+        context menu) need to know exactly which track was clicked."""
+        cur = 0.0
+        for tr in self.ordered_tracks():
+            h = TRACK_H if tr.kind == "video" else AUDIO_H
+            if cur <= y < cur + h:
+                return tr
+            cur += h
+        return None
+
     def nearest_track_y(self, y: float, kind: str) -> float:
         best, best_d = 3.0, 1e9
         for tr in self.ordered_tracks():
@@ -746,6 +764,27 @@ class TimelineWidget(QWidget):
             self.ruler.update()
 
         self.undo_stack.push(ChangePropertiesCommand("Recolor marker", marker, before, after, refresh))
+
+    def close_gap_after(self, track_id: str, time: float) -> None:
+        """Undoable wrapper around Project.gap_at()/close_gap_after() - a
+        macro of one ChangePropertiesCommand per rippled clip so the whole
+        ripple undoes/redoes as a single step, same pattern delete_selected
+        uses for its own multi-clip macro."""
+        found = self.project.gap_at(track_id, time)
+        if not found:
+            return
+        gap, affected = found
+
+        def refresh():
+            self.project.dirty = True
+            self.refresh(True)
+
+        self.undo_stack.beginMacro("Close gap")
+        for c in affected:
+            before = {"start": c.start}
+            after = {"start": max(0.0, c.start - gap)}
+            self.undo_stack.push(ChangePropertiesCommand("Close gap", c, before, after, refresh))
+        self.undo_stack.endMacro()
 
     def add_media_at_playhead(self, media_id: str, track_id: str = "",
                               start: float | None = None, duration: float | None = None,

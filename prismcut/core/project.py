@@ -178,6 +178,37 @@ class Project:
     def duration(self) -> float:
         return max((c.end for c in self.clips.values()), default=0.0)
 
+    def gap_at(self, track_id: str, time: float) -> Optional[tuple[float, list[Clip]]]:
+        """(gap_width, clips_to_ripple) if `time` falls inside a real,
+        closeable gap on `track_id` - the empty space before the first
+        clip, or between two non-adjacent clips - else None (`time` is
+        inside a clip, the clips on either side are already adjacent, or
+        `time` is past the last clip, where there's nothing after it to
+        pull left). Single-track only, by design - not a cross-track
+        ripple-trim."""
+        clips = self.clips_on(track_id)
+        prev_end = 0.0
+        for i, c in enumerate(clips):
+            if prev_end <= time <= c.start and c.start > prev_end:
+                return c.start - prev_end, clips[i:]
+            if c.start <= time < c.end:
+                return None
+            prev_end = max(prev_end, c.end)
+        return None
+
+    def close_gap_after(self, track_id: str, time: float) -> bool:
+        """Ripples every clip on `track_id` at or after the gap containing
+        `time` left by that gap's width, closing it. Returns False (no-op)
+        if `time` isn't actually inside a closeable gap - see gap_at()."""
+        found = self.gap_at(track_id, time)
+        if not found:
+            return False
+        gap, affected = found
+        for c in affected:
+            c.start = max(0.0, c.start - gap)
+        self.dirty = True
+        return True
+
     def resolve_at(self, t: float):
         """Topmost visible video clip covering time t -> (clip, media, source_offset)."""
         for track in self.video_tracks():          # first video track = topmost

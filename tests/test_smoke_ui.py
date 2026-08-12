@@ -1643,6 +1643,51 @@ def test_timeline_snap_time_snaps_to_marker(win):
         win.project.remove_marker(marker.id)
 
 
+def test_timeline_close_gap_after_is_undoable(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    b = win.project.add_clip(img.id, track.id, 5.0, 2.0)
+    try:
+        win.timeline.close_gap_after(track.id, 4.0)
+        assert b.start == 3.0
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert b.start == 5.0
+
+        win.undo_stack.redo()
+        assert b.start == 3.0
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_clip(b.id)
+        win.project.remove_media(img.id)
+
+
+def test_timeline_close_gap_after_is_a_noop_without_a_gap(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    try:
+        win.timeline.close_gap_after(track.id, 1.0)   # inside the clip, not a gap
+        assert a.start == 0.0
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_media(img.id)
+
+
+def test_track_at_position_finds_the_right_row(win):
+    from prismcut.ui.panels.timeline import AUDIO_H, TRACK_H
+
+    y = 0.0
+    for tr in win.timeline.ordered_tracks():
+        found = win.timeline.track_at_position(y + 1.0)
+        assert found is not None and found.id == tr.id
+        y += TRACK_H if tr.kind == "video" else AUDIO_H
+
+
 def test_timeline_reveal_clip_seeks_scrolls_and_selects(win):
     img = win.project.add_media(__file__)
     img.kind = "image"

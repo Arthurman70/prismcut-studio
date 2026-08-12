@@ -180,3 +180,93 @@ def test_project_save_load_round_trips_markers(tmp_path):
     assert loaded.markers[0].time == 2.5
     assert loaded.markers[0].label == "intro ends"
     assert loaded.markers[0].color == "#42a5f5"
+
+
+def _image_item(p: Project, tmp_path):
+    img = tmp_path / "a.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    return p.add_media(img)
+
+
+def test_gap_at_returns_none_inside_a_clip(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 3.0)
+
+    assert p.gap_at(v1.id, 1.5) is None
+
+
+def test_gap_at_finds_gap_before_first_clip(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    clip = p.add_clip(item.id, v1.id, 2.0, 3.0)
+
+    found = p.gap_at(v1.id, 1.0)
+
+    assert found is not None
+    gap, affected = found
+    assert gap == 2.0
+    assert affected == [clip]
+
+
+def test_gap_at_finds_gap_between_clips(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 3.0)
+    b = p.add_clip(item.id, v1.id, 5.0, 2.0)
+
+    found = p.gap_at(v1.id, 4.0)
+
+    assert found is not None
+    gap, affected = found
+    assert gap == 2.0
+    assert affected == [b]
+
+
+def test_gap_at_returns_none_for_already_adjacent_clips(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 3.0)
+    p.add_clip(item.id, v1.id, 3.0, 2.0)
+
+    assert p.gap_at(v1.id, 3.0) is None
+
+
+def test_gap_at_returns_none_past_the_last_clip(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 3.0)
+
+    assert p.gap_at(v1.id, 10.0) is None
+
+
+def test_close_gap_after_ripples_only_the_affected_track(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    a1 = p.audio_tracks()[0]
+    a = p.add_clip(item.id, v1.id, 0.0, 3.0)
+    b = p.add_clip(item.id, v1.id, 5.0, 2.0)
+    other_track_clip = p.add_clip(item.id, a1.id, 5.0, 2.0)
+
+    changed = p.close_gap_after(v1.id, 4.0)
+
+    assert changed is True
+    assert a.start == 0.0                    # before the gap - unaffected
+    assert b.start == 3.0                    # rippled left by the 2.0s gap
+    assert other_track_clip.start == 5.0     # different track - untouched
+
+
+def test_close_gap_after_returns_false_when_no_gap(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    clip = p.add_clip(item.id, v1.id, 0.0, 3.0)
+
+    assert p.close_gap_after(v1.id, 1.0) is False
+    assert clip.start == 0.0
