@@ -269,8 +269,21 @@
         { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["480p", "720p", "1080p"], "default": "1080p" }
       ] },
     { "id": "fal-ai/minimax/hailuo-02/pro/image-to-video", "provider": "fal", "label": "Hailuo 02 i2v (via fal)", "caps": ["image_to_video", "video_generate"] },
-    { "id": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video", "provider": "fal", "label": "Kling 2.5 Turbo Pro (via fal)", "caps": ["video_generate"],
-      "params": [ { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["5", "10"], "default": "5" } ] },
+    { "id": "fal-ai/kling-video/v2.6/pro/text-to-video", "provider": "fal", "label": "Kling 2.6 Pro (via fal)", "caps": ["video_generate"],
+      "params": [
+        { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["5", "10"], "default": "5" },
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["16:9", "9:16", "1:1"], "default": "16:9" },
+        { "name": "negative_prompt", "label": "Negative prompt", "type": "text", "default": "blur, distort, and low quality" },
+        { "name": "generate_audio", "label": "Generate native audio", "type": "bool", "default": true }
+      ] },
+    { "id": "fal-ai/kling-video/v2.6/pro/image-to-video", "provider": "fal", "label": "Kling 2.6 Pro i2v (via fal)", "caps": ["image_to_video", "video_generate"],
+      "notes": "Cinematic image-to-video with native audio - animates a starting image rather than generating from text alone.",
+      "params": [
+        { "name": "start_image_url", "label": "Source image (filled in automatically)", "type": "text", "default": "" },
+        { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["5", "10"], "default": "5" },
+        { "name": "negative_prompt", "label": "Negative prompt", "type": "text", "default": "blur, distort, and low quality" },
+        { "name": "generate_audio", "label": "Generate native audio", "type": "bool", "default": true }
+      ] },
     { "id": "fal-ai/flux-pro/v1.1-ultra", "provider": "fal", "label": "FLUX 1.1 Pro Ultra (via fal)", "caps": ["image_generate"],
       "params": [ { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"], "default": "1:1" } ] },
 

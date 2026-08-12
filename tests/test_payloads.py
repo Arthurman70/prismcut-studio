@@ -140,6 +140,58 @@ def test_seedance_appends_flags(monkeypatch, registry, keychain):
     assert "--resolution 720p" in text and "--duration 5" in text and "--ratio 16:9" in text
 
 
+def test_fal_kling_image_to_video_uses_start_image_url_field(monkeypatch, registry, keychain,
+                                                              tmp_path):
+    """Kling's fal.ai image-to-video endpoint names its source-image field
+    "start_image_url", unlike every other fal video model here which uses
+    the generic "image_url" - FalAI._payload() must route to whichever
+    field the model's own registry params declare (verified against fal's
+    real API docs), not blindly use the generic name."""
+    captured = {}
+    img = tmp_path / "frame.png"
+    img.write_bytes(b"png-bytes")
+
+    def fake_request_json(method, url, **kw):
+        captured.update(method=method, url=url, **kw)
+        return {"video": {"url": "https://cdn.example/kling-out.mp4"}}
+
+    monkeypatch.setattr(http, "request_json", fake_request_json)
+    monkeypatch.setattr(http, "download", lambda url, dest, **kw: dest)
+    adapter = make_adapter("fal", keychain, registry)
+    model = registry.by_key("fal::fal-ai/kling-video/v2.6/pro/image-to-video")
+    out = adapter.generate_video(model.id, "a dragon flying over mountains",
+                                 model.default_params(), image=str(img))
+    assert out.endswith(".mp4")
+    assert "fal-ai/kling-video/v2.6/pro/image-to-video" in captured["url"]
+    body = captured["json_body"]
+    assert "start_image_url" in body
+    assert body["start_image_url"].startswith("data:")
+    assert "image_url" not in body
+
+
+def test_fal_hailuo_image_to_video_still_uses_generic_image_url_field(monkeypatch, registry,
+                                                                       keychain, tmp_path):
+    """Regression guard for the fix above: every OTHER fal video model
+    (no start_image_url declared in its params) must keep using the plain
+    "image_url" field it always has."""
+    captured = {}
+    img = tmp_path / "frame.png"
+    img.write_bytes(b"png-bytes")
+
+    def fake_request_json(method, url, **kw):
+        captured.update(method=method, url=url, **kw)
+        return {"video": {"url": "https://cdn.example/hailuo-out.mp4"}}
+
+    monkeypatch.setattr(http, "request_json", fake_request_json)
+    monkeypatch.setattr(http, "download", lambda url, dest, **kw: dest)
+    adapter = make_adapter("fal", keychain, registry)
+    model = registry.by_key("fal::fal-ai/minimax/hailuo-02/pro/image-to-video")
+    adapter.generate_video(model.id, "a cat surfing", model.default_params(), image=str(img))
+    body = captured["json_body"]
+    assert "image_url" in body
+    assert "start_image_url" not in body
+
+
 def test_every_provider_instantiates(registry, keychain):
     for name in registry.providers:
         adapter = make_adapter(name, keychain, registry)

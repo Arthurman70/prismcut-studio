@@ -58,7 +58,15 @@ class FalAI(Adapter):
                 continue
             payload[k] = v
         if image is not None:
-            payload["image_url"] = http.data_uri(image)
+            # Most fal video/image models take the source image as
+            # "image_url" - a few (Kling's image-to-video endpoints, which
+            # also support a separate end_image_url for start/end-frame
+            # interpolation) use "start_image_url" instead. The registry
+            # entry declares whichever field that specific model expects
+            # (empty-string default, same pattern lip-sync's video_url/
+            # audio_url params use) - honor it instead of guessing wrong.
+            field = "start_image_url" if params and "start_image_url" in params else "image_url"
+            payload[field] = http.data_uri(image)
         return payload
 
     def _download_all(self, result: dict, stem: str, ext_hint: str) -> list[str]:

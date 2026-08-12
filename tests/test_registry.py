@@ -52,6 +52,14 @@ def test_headline_models_present(registry):
     assert registry.find("deepseek", "deepseek-chat")
 
 
+def test_kling_text_and_image_to_video_present(registry):
+    t2v = registry.find("fal", "fal-ai/kling-video/v2.6/pro/text-to-video")
+    i2v = registry.find("fal", "fal-ai/kling-video/v2.6/pro/image-to-video")
+    assert t2v and "video_generate" in t2v.caps
+    assert i2v and "image_to_video" in i2v.caps and "video_generate" in i2v.caps
+    assert any(p["name"] == "start_image_url" for p in i2v.params)
+
+
 def test_user_overlay_roundtrip(registry):
     registry.save_user_model({"id": "my-model", "provider": "custom",
                               "label": "Mine", "caps": ["chat"], "params": []})
