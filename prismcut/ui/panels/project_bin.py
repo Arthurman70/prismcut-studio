@@ -11,12 +11,24 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QLin
                                QVBoxLayout, QWidget)
 
 from ...core import media as media_utils
-from ...core.project import MediaItem, Project
+from ...core.project import Bin, MediaItem, Project
 from ...core.undo_commands import AddOrRemoveItemCommand, ChangePropertiesCommand
 from ..widgets.common import DropAcceptor
 
 GROUPS = [("import", "📁 Media"), ("generated", "✨ AI Generated"), ("audio", "🎵 Audio"),
           ("titles", "🔤 Titles")]
+
+# Fixed palette (name, hex, display square) - a MediaItem.label_color that
+# doesn't match one of these (e.g. from a future version's wider palette)
+# just shows with no square rather than erroring.
+LABEL_COLORS = [
+    ("Red", "#ef5350", "🟥"), ("Orange", "#ffa726", "🟧"), ("Yellow", "#ffee58", "🟨"),
+    ("Green", "#66bb6a", "🟩"), ("Blue", "#42a5f5", "🟦"), ("Purple", "#ab47bc", "🟪"),
+]
+# A second data role (UserRole is already the leaf media_id) marking a
+# top-level tree item as a bin header rather than a kind-based group, so
+# the context menu handler can tell them apart with a single lookup.
+_BIN_HEADER_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class ProjectBin(QWidget):
@@ -98,6 +110,13 @@ class ProjectBin(QWidget):
             empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.tree.addTopLevelItem(empty)
             return
+        bin_roots = {}
+        for b in self.project.bins:
+            root = QTreeWidgetItem([f"📂 {b.name}"])
+            root.setFlags(root.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            root.setData(0, _BIN_HEADER_ROLE, b.id)
+            bin_roots[b.id] = root
+            self.tree.addTopLevelItem(root)
         roots = {}
         for key, title in GROUPS:
             root = QTreeWidgetItem([title])
@@ -105,22 +124,28 @@ class ProjectBin(QWidget):
             roots[key] = root
             self.tree.addTopLevelItem(root)
         for item in sorted(self.project.media.values(), key=lambda m: m.label.lower()):
-            group = item.group if item.group in roots else "import"
-            if item.kind == "audio" and group == "import":
-                group = "audio"
-            node = QTreeWidgetItem([self._label_for(item)])
+            color_sq = next((sq for _n, hexval, sq in LABEL_COLORS if hexval == item.label_color), "")
+            color_prefix = f"{color_sq} " if color_sq else ""
+            node = QTreeWidgetItem([color_prefix + self._label_for(item)])
             node.setData(0, Qt.ItemDataRole.UserRole, item.id)
             thumb = None if item.kind == "title" else media_utils.thumbnail(item.path)
             if thumb:
                 node.setIcon(0, QIcon(QPixmap(str(thumb))))
             else:
-                node.setText(0, {"image": "🖼 ", "video": "🎬 ", "audio": "🎵 ", "title": "🔤 "}
-                             .get(item.kind, "📄 ") + self._label_for(item))
+                kind_prefix = {"image": "🖼 ", "video": "🎬 ", "audio": "🎵 ", "title": "🔤 "} \
+                    .get(item.kind, "📄 ")
+                node.setText(0, color_prefix + kind_prefix + self._label_for(item))
             if item.kind == "title":
                 node.setToolTip(0, item.meta.get("title_text", item.label))
             else:
                 node.setToolTip(0, item.path + (f"\n{item.meta.get('prompt', '')}" if item.meta else ""))
-            roots[group].addChild(node)
+            if item.bin_id in bin_roots:
+                bin_roots[item.bin_id].addChild(node)
+            else:
+                group = item.group if item.group in roots else "import"
+                if item.kind == "audio" and group == "import":
+                    group = "audio"
+                roots[group].addChild(node)
         self.tree.expandAll()
         self._filter(self.search.text())
 
@@ -249,6 +274,13 @@ class ProjectBin(QWidget):
         self.undo_stack.endMacro()
 
     def _menu(self, pos):
+        it = self.tree.itemAt(pos)
+        if it is None:
+            return
+        bin_id = it.data(0, _BIN_HEADER_ROLE)
+        if bin_id:
+            self._bin_header_menu(bin_id, pos)
+            return
         mid = self._selected_id()
         if not mid:
             return
@@ -267,6 +299,22 @@ class ProjectBin(QWidget):
             menu.addAction("📝 Transcribe (AI)", lambda: self.transcribeRequested.emit(mid))
             menu.addAction("🎬 Generate captions (SRT)…", lambda: self.captionsRequested.emit(mid))
         menu.addSeparator()
+        color_menu = menu.addMenu("🎨 Color label")
+        for name, hexval, sq in LABEL_COLORS:
+            color_menu.addAction(f"{sq} {name}", lambda h=hexval: self._set_label_color(h))
+        if item.label_color:
+            color_menu.addSeparator()
+            color_menu.addAction("✕ None", lambda: self._set_label_color(""))
+        bin_menu = menu.addMenu("📂 Move to bin")
+        for b in self.project.bins:
+            bin_menu.addAction(b.name, lambda bid=b.id: self._set_bin(bid))
+        if self.project.bins:
+            bin_menu.addSeparator()
+        bin_menu.addAction("➕ New bin…", self._new_bin_and_assign)
+        if item.bin_id:
+            bin_menu.addSeparator()
+            bin_menu.addAction("✕ Remove from bin", lambda: self._set_bin(""))
+        menu.addSeparator()
         menu.addAction("✎ Rename…", lambda: self._rename(item))
         if item.kind != "title":
             menu.addAction("📁 Reveal in Explorer", lambda: self._reveal(item))
@@ -275,6 +323,87 @@ class ProjectBin(QWidget):
         menu.addAction(f"🗑 Remove {n} selected" if n > 1 else "🗑 Remove from project",
                        self._remove_selected)
         menu.exec(self.tree.mapToGlobal(pos))
+
+    def _selected_items(self) -> list[MediaItem]:
+        mids = self._selected_ids() or ([self._selected_id()] if self._selected_id() else [])
+        return [self.project.media[m] for m in mids if m in self.project.media]
+
+    def _set_label_color(self, color: str):
+        items = self._selected_items()
+        if not items:
+            return
+        text = "Set color label" if color else "Clear color label"
+        self.undo_stack.beginMacro(text if len(items) == 1 else f"{text} ({len(items)} items)")
+        for item in items:
+            self.undo_stack.push(ChangePropertiesCommand(
+                text, item, {"label_color": item.label_color}, {"label_color": color},
+                self._undo_refresh))
+        self.undo_stack.endMacro()
+
+    def _set_bin(self, bin_id: str):
+        items = self._selected_items()
+        if not items:
+            return
+        text = "Move to bin" if bin_id else "Remove from bin"
+        self.undo_stack.beginMacro(text if len(items) == 1 else f"{text} ({len(items)} items)")
+        for item in items:
+            self.undo_stack.push(ChangePropertiesCommand(
+                text, item, {"bin_id": item.bin_id}, {"bin_id": bin_id}, self._undo_refresh))
+        self.undo_stack.endMacro()
+
+    def _new_bin_and_assign(self):
+        from PySide6.QtWidgets import QInputDialog
+        items = self._selected_items()
+        text, ok = QInputDialog.getText(self, "New bin", "Name:")
+        text = text.strip()
+        if not ok or not text:
+            return
+        b = self.project.add_bin(text)
+        self.undo_stack.beginMacro(f"New bin {b.name}")
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            f"Add bin {b.name}", add=True,
+            insert=lambda: self.project.bins.append(b) if b not in self.project.bins else None,
+            remove=lambda: setattr(self.project, "bins", [x for x in self.project.bins if x.id != b.id]),
+            refresh=self._undo_refresh))
+        for item in items:
+            self.undo_stack.push(ChangePropertiesCommand(
+                "Move to bin", item, {"bin_id": item.bin_id}, {"bin_id": b.id}, self._undo_refresh))
+        self.undo_stack.endMacro()
+
+    def _bin_header_menu(self, bin_id: str, pos):
+        b = next((x for x in self.project.bins if x.id == bin_id), None)
+        if not b:
+            return
+        menu = QMenu(self)
+        menu.addAction("✎ Rename bin…", lambda: self._rename_bin(b))
+        menu.addAction("🗑 Delete bin", lambda: self._remove_bin(b))
+        menu.exec(self.tree.mapToGlobal(pos))
+
+    def _rename_bin(self, b: Bin):
+        from PySide6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(self, "Rename bin", "Name:", text=b.name)
+        text = text.strip()
+        if ok and text and text != b.name:
+            self.undo_stack.push(ChangePropertiesCommand(
+                f"Rename bin to {text}", b, {"name": b.name}, {"name": text}, self._undo_refresh))
+
+    def _remove_bin(self, b: Bin):
+        # Ripples to every media item currently filed under it (un-filed
+        # back to the default kind-based grouping, not deleted) so the
+        # whole thing undoes/redoes as one step - same macro-of-commands
+        # pattern _remove_selected uses for its clip cascade.
+        affected = [m for m in self.project.media.values() if m.bin_id == b.id]
+        self.undo_stack.beginMacro(f"Delete bin {b.name}")
+        for m in affected:
+            self.undo_stack.push(ChangePropertiesCommand(
+                f"Un-file {m.label or 'media'}", m, {"bin_id": m.bin_id}, {"bin_id": ""},
+                self._undo_refresh))
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            f"Delete bin {b.name}", add=False,
+            insert=lambda: self.project.bins.append(b) if b not in self.project.bins else None,
+            remove=lambda: setattr(self.project, "bins", [x for x in self.project.bins if x.id != b.id]),
+            refresh=self._undo_refresh))
+        self.undo_stack.endMacro()
 
     def _rename(self, item: MediaItem):
         from PySide6.QtWidgets import QInputDialog

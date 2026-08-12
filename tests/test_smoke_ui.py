@@ -2368,6 +2368,223 @@ def test_project_bin_add_title_media_is_undoable(win):
     assert item.id in win.project.media
 
 
+def _select_media_node(win, media_id: str):
+    """Finds the real QTreeWidgetItem refresh() built for this media_id and
+    selects it, exercising the actual selection path _selected_items()
+    reads rather than mocking it away."""
+    from PySide6.QtCore import Qt
+
+    tree = win.bin.tree
+    for i in range(tree.topLevelItemCount()):
+        root = tree.topLevelItem(i)
+        for j in range(root.childCount()):
+            child = root.child(j)
+            if child.data(0, Qt.ItemDataRole.UserRole) == media_id:
+                tree.setCurrentItem(child)
+                child.setSelected(True)
+                return child
+    raise AssertionError(f"no tree node found for media_id {media_id!r} - call win.bin.refresh() first")
+
+
+def test_project_bin_set_label_color_is_undoable(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    win.bin.refresh()
+    try:
+        _select_media_node(win, img.id)
+
+        win.bin._set_label_color("#ef5350")
+
+        assert img.label_color == "#ef5350"
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert img.label_color == ""
+
+        win.undo_stack.redo()
+        assert img.label_color == "#ef5350"
+    finally:
+        win.project.remove_media(img.id)
+        win.bin.refresh()
+
+
+def test_project_bin_set_label_color_none_clears_it(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.label_color = "#42a5f5"
+    win.bin.refresh()
+    try:
+        _select_media_node(win, img.id)
+        win.bin._set_label_color("")
+        assert img.label_color == ""
+    finally:
+        win.project.remove_media(img.id)
+        win.bin.refresh()
+
+
+def test_project_bin_set_bin_is_undoable(win):
+    b = win.project.add_bin("Interviews")
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    win.bin.refresh()
+    try:
+        _select_media_node(win, img.id)
+
+        win.bin._set_bin(b.id)
+
+        assert img.bin_id == b.id
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert img.bin_id == ""
+
+        win.undo_stack.redo()
+        assert img.bin_id == b.id
+    finally:
+        win.project.remove_media(img.id)
+        win.project.bins.remove(b)
+        win.bin.refresh()
+
+
+def test_project_bin_set_bin_empty_string_removes_from_bin(win):
+    b = win.project.add_bin("Interviews")
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.bin_id = b.id
+    win.bin.refresh()
+    try:
+        _select_media_node(win, img.id)
+        win.bin._set_bin("")
+        assert img.bin_id == ""
+    finally:
+        win.project.remove_media(img.id)
+        win.project.bins.remove(b)
+        win.bin.refresh()
+
+
+def test_project_bin_new_bin_and_assign_is_one_undo_step(win, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    win.bin.refresh()
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Interviews", True))
+    try:
+        _select_media_node(win, img.id)
+
+        win.bin._new_bin_and_assign()
+
+        assert len(win.project.bins) == 1
+        new_bin = win.project.bins[0]
+        assert new_bin.name == "Interviews"
+        assert img.bin_id == new_bin.id
+
+        win.undo_stack.undo()   # one Ctrl+Z undoes bin creation AND the assignment together
+        assert win.project.bins == []
+        assert img.bin_id == ""
+
+        win.undo_stack.redo()
+        assert len(win.project.bins) == 1
+        assert img.bin_id == win.project.bins[0].id
+    finally:
+        win.project.remove_media(img.id)
+        win.project.bins.clear()
+        win.bin.refresh()
+
+
+def test_project_bin_new_bin_cancelled_creates_nothing(win, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("", False))
+    before = list(win.project.bins)
+    win.bin._new_bin_and_assign()
+    assert win.project.bins == before
+
+
+def test_project_bin_rename_bin_is_undoable(win, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    b = win.project.add_bin("Interviews")
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("B-Roll", True))
+    try:
+        win.bin._rename_bin(b)
+
+        assert b.name == "B-Roll"
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert b.name == "Interviews"
+    finally:
+        win.project.bins.remove(b)
+
+
+def test_project_bin_rename_bin_cancelled_keeps_the_old_name(win, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    b = win.project.add_bin("Interviews")
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("B-Roll", False))
+    try:
+        win.bin._rename_bin(b)
+        assert b.name == "Interviews"
+    finally:
+        win.project.bins.remove(b)
+
+
+def test_project_bin_remove_bin_unfiles_media_and_is_undoable(win):
+    b = win.project.add_bin("Interviews")
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.bin_id = b.id
+    win.bin.refresh()
+    try:
+        win.bin._remove_bin(b)
+
+        assert b not in win.project.bins
+        assert img.bin_id == ""
+
+        win.undo_stack.undo()
+        assert b in win.project.bins
+        assert img.bin_id == b.id
+    finally:
+        win.project.remove_media(img.id)
+        if b in win.project.bins:
+            win.project.bins.remove(b)
+        win.bin.refresh()
+
+
+def test_project_bin_refresh_routes_media_into_its_bin_node(win):
+    from prismcut.ui.panels.project_bin import _BIN_HEADER_ROLE
+
+    b = win.project.add_bin("Interviews")
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.bin_id = b.id
+    try:
+        win.bin.refresh()
+
+        node = _select_media_node(win, img.id)
+        assert node.parent().data(0, _BIN_HEADER_ROLE) == b.id
+        assert node.parent().text(0) == "📂 Interviews"
+    finally:
+        win.project.remove_media(img.id)
+        win.project.bins.remove(b)
+        win.bin.refresh()
+
+
+def test_project_bin_refresh_shows_color_label_square(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    img.label_color = "#ef5350"   # Red
+    try:
+        win.bin.refresh()
+
+        node = _select_media_node(win, img.id)
+        assert node.text(0).startswith("🟥")
+    finally:
+        win.project.remove_media(img.id)
+        win.bin.refresh()
+
+
 def test_monitor_show_title_renders_without_crashing(win):
     win.clip_monitor.show_title({
         "title_text": "Preview", "font_size": 64, "color": "#ffffff",

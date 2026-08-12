@@ -28,6 +28,18 @@ class MediaItem:
     has_audio: bool = False
     group: str = "import"           # import | generated | audio
     meta: dict = field(default_factory=dict)   # provider/model/prompt for generated media
+    # A user-created Bin's id, or "" for the default kind-based grouping
+    # (see GROUPS in project_bin.py) - sorting into a bin doesn't change
+    # `group`/`kind`, it's an independent, optional organizational layer
+    # the bin panel checks first and falls back from.
+    bin_id: str = ""
+    label_color: str = ""           # "" = none, else a hex color from a fixed palette
+
+
+@dataclass
+class Bin:
+    id: str
+    name: str
 
 
 @dataclass
@@ -100,7 +112,32 @@ class Project:
         ]
         self.clips: dict[str, Clip] = {}
         self.markers: list[Marker] = []
+        self.bins: list[Bin] = []
         self.dirty = False
+
+    # -------------------------------------------------------------------- bins
+    def add_bin(self, name: str) -> Bin:
+        b = Bin(id=_uid(), name=name.strip() or "New Bin")
+        self.bins.append(b)
+        self.dirty = True
+        return b
+
+    def rename_bin(self, bin_id: str, name: str) -> None:
+        b = next((x for x in self.bins if x.id == bin_id), None)
+        if b:
+            b.name = name.strip() or b.name
+            self.dirty = True
+
+    def remove_bin(self, bin_id: str) -> None:
+        """Deletes the bin itself; media that was filed under it falls back
+        to the default kind-based grouping rather than vanishing or being
+        deleted - a bin is just an organizational label, not a container
+        with ownership semantics."""
+        self.bins = [b for b in self.bins if b.id != bin_id]
+        for m in self.media.values():
+            if m.bin_id == bin_id:
+                m.bin_id = ""
+        self.dirty = True
 
     # ------------------------------------------------------------------ media
     def add_media(self, path, group: str = "import", meta: Optional[dict] = None) -> MediaItem:
@@ -335,6 +372,7 @@ class Project:
             "tracks": [asdict(t) for t in self.tracks],
             "clips": [asdict(c) for c in self.clips.values()],
             "markers": [asdict(mk) for mk in self.markers],
+            "bins": [asdict(b) for b in self.bins],
         }
 
     def save(self, path=None) -> Path:
@@ -359,5 +397,6 @@ class Project:
         proj.tracks = [Track(**t) for t in data.get("tracks", [])] or proj.tracks
         proj.clips = {c["id"]: Clip(**c) for c in data.get("clips", [])}
         proj.markers = [Marker(**mk) for mk in data.get("markers", [])]
+        proj.bins = [Bin(**b) for b in data.get("bins", [])]
         proj.dirty = False
         return proj

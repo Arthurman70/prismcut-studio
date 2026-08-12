@@ -397,3 +397,73 @@ def test_clip_transition_out_defaults_to_zero_and_round_trips(tmp_path):
     loaded = Project.load(path)
 
     assert loaded.clips[clip.id].transition_out == 1.5
+
+
+def test_add_bin_creates_a_named_bin():
+    p = Project()
+    b = p.add_bin("Interviews")
+
+    assert b in p.bins
+    assert b.name == "Interviews"
+    assert p.dirty is True
+
+
+def test_add_bin_blank_name_falls_back_to_default():
+    p = Project()
+    b = p.add_bin("   ")
+
+    assert b.name == "New Bin"
+
+
+def test_rename_bin():
+    p = Project()
+    b = p.add_bin("Interviews")
+
+    p.rename_bin(b.id, "B-Roll")
+
+    assert b.name == "B-Roll"
+
+
+def test_rename_bin_blank_name_keeps_the_old_one():
+    p = Project()
+    b = p.add_bin("Interviews")
+
+    p.rename_bin(b.id, "   ")
+
+    assert b.name == "Interviews"
+
+
+def test_rename_bin_unknown_id_is_a_noop():
+    p = Project()
+    p.add_bin("Interviews")
+    p.rename_bin("does-not-exist", "New Name")   # must not raise
+    assert [b.name for b in p.bins] == ["Interviews"]
+
+
+def test_remove_bin_falls_media_back_to_default_grouping(tmp_path):
+    p = Project()
+    b = p.add_bin("Interviews")
+    item = _image_item(p, tmp_path)
+    item.bin_id = b.id
+
+    p.remove_bin(b.id)
+
+    assert b not in p.bins
+    assert item.bin_id == ""   # media survives, just un-filed rather than deleted
+
+
+def test_media_item_bin_id_and_label_color_round_trip(tmp_path):
+    p = Project()
+    b = p.add_bin("Interviews")
+    item = _image_item(p, tmp_path)
+    item.bin_id = b.id
+    item.label_color = "#ef5350"
+
+    path = tmp_path / "proj.pcut"
+    p.save(path)
+    loaded = Project.load(path)
+
+    assert loaded.media[item.id].bin_id == b.id
+    assert loaded.media[item.id].label_color == "#ef5350"
+    assert len(loaded.bins) == 1
+    assert loaded.bins[0].name == "Interviews"
