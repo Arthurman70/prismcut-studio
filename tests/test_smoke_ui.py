@@ -2237,6 +2237,76 @@ def test_export_dialog_format_switch_updates_output_extension(win):
         dlg.close()
 
 
+def test_export_dialog_nvenc_disabled_and_unchecked_for_incompatible_formats(win):
+    from prismcut.ui.dialogs.export_dialog import FORMATS, ExportDialog
+
+    dlg = ExportDialog(win.project, win.jobs, win.settings, win)
+    try:
+        mp4_idx = next(i for i, (_n, key, _e) in enumerate(FORMATS) if key == "mp4")
+        dlg.fmt.setCurrentIndex(mp4_idx)
+        assert dlg.nvenc_check.isEnabled() is True
+        dlg.nvenc_check.setChecked(True)
+
+        gif_idx = next(i for i, (_n, key, _e) in enumerate(FORMATS) if key == "gif")
+        dlg.fmt.setCurrentIndex(gif_idx)
+
+        assert dlg.nvenc_check.isEnabled() is False
+        assert dlg.nvenc_check.isChecked() is False   # switching away must clear it, not just disable it
+    finally:
+        dlg.close()
+
+
+def test_export_dialog_nvenc_enabled_for_compatible_formats(win):
+    from prismcut.ui.dialogs.export_dialog import FORMATS, ExportDialog, NVENC_CAPABLE_FORMATS
+
+    dlg = ExportDialog(win.project, win.jobs, win.settings, win)
+    try:
+        for idx, (_name, key, _ext) in enumerate(FORMATS):
+            dlg.fmt.setCurrentIndex(idx)
+            assert dlg.nvenc_check.isEnabled() == (key in NVENC_CAPABLE_FORMATS), \
+                f"format row {idx} ({key}) has the wrong nvenc_check enabled state"
+    finally:
+        dlg.close()
+
+
+def test_export_dialog_nvenc_checkbox_flows_into_render_options(win, monkeypatch, tmp_path):
+    import prismcut.ui.dialogs.export_dialog as export_dialog_mod
+    from prismcut.ui.dialogs.export_dialog import ExportDialog
+
+    captured = {}
+
+    def fake_run_render(project, opts, job):
+        captured["use_nvenc"] = opts.use_nvenc
+        return str(tmp_path / "out.mp4")
+
+    monkeypatch.setattr(export_dialog_mod, "run_render", fake_run_render)
+    dlg = ExportDialog(win.project, win.jobs, win.settings, win)
+    dlg.out_edit.setText(str(tmp_path / "out.mp4"))
+    dlg.nvenc_check.setChecked(True)
+    dlg._render()
+
+    assert _wait_until(lambda: "use_nvenc" in captured)
+    assert captured["use_nvenc"] is True
+
+
+def test_export_dialog_nvenc_setting_persists_across_dialogs(win, monkeypatch, tmp_path):
+    import prismcut.ui.dialogs.export_dialog as export_dialog_mod
+    from prismcut.ui.dialogs.export_dialog import ExportDialog
+
+    monkeypatch.setattr(export_dialog_mod, "run_render",
+                        lambda project, opts, job: str(tmp_path / "out.mp4"))
+    dlg1 = ExportDialog(win.project, win.jobs, win.settings, win)
+    dlg1.out_edit.setText(str(tmp_path / "out.mp4"))
+    dlg1.nvenc_check.setChecked(True)
+    dlg1._render()
+
+    dlg2 = ExportDialog(win.project, win.jobs, win.settings, win)
+    try:
+        assert dlg2.nvenc_check.isChecked() is True
+    finally:
+        dlg2.close()
+
+
 # -------------------------------------------------------------------- titles
 
 def test_title_dialog_result_media_creates_title_item(win):

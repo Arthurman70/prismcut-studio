@@ -646,3 +646,110 @@ def test_lut_path_windows_drive_colon_is_escaped(tmp_path):
     joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
 
     assert "lut3d=file='C\\:/LUTs/Teal and Orange.cube'" in joined
+
+
+def test_nvenc_off_by_default_uses_libx264(tmp_path):
+    # Precise -c:v-value checks rather than a bare substring search: the
+    # ffmpeg command embeds full input file paths, and pytest's tmp_path
+    # is derived from this test's own name (which contains "nvenc"),
+    # so a loose "nvenc" not in joined check would false-positive on the
+    # file paths themselves.
+    p = make_project(tmp_path)
+    cmd = build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4")))
+
+    assert _arg_after(cmd, "-c:v") == "libx264"
+
+
+def test_nvenc_on_swaps_libx264_for_h264_nvenc(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="mp4", use_nvenc=True, crf=22, out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+
+    assert _arg_after(cmd, "-c:v") == "h264_nvenc"
+    assert _arg_after(cmd, "-cq") == "22"
+    assert "-crf" not in cmd
+
+
+def test_nvenc_on_swaps_libx265_for_hevc_nvenc(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="mp4-hevc", use_nvenc=True, crf=20, out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+
+    assert _arg_after(cmd, "-c:v") == "hevc_nvenc"
+    assert _arg_after(cmd, "-cq") == "24"   # crf + 4, same offset the software path uses
+
+
+def test_nvenc_does_not_apply_to_prores(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="mov-prores", use_nvenc=True, out_path=str(tmp_path / "out.mov"))
+
+    cmd = build_command(p, opts)
+
+    assert _arg_after(cmd, "-c:v") == "prores_ks"
+    assert "-cq" not in cmd
+
+
+def _fake_popen_factory(lines, returncode):
+    class FakeStdout:
+        def __init__(self, ls):
+            self._lines = iter(ls)
+
+        def readline(self):
+            return next(self._lines, b"")
+
+    class FakeProc:
+        def __init__(self, ls):
+            self.stdout = FakeStdout(ls)
+            self.returncode = returncode
+
+        def poll(self):
+            return returncode
+
+        def wait(self, timeout=None):
+            return returncode
+
+        def kill(self):
+            pass
+
+    return lambda cmd, **kwargs: FakeProc(lines)
+
+
+def test_run_render_nvenc_failure_gives_a_clear_message(monkeypatch, tmp_path):
+    import prismcut.core.render as render_mod
+    from prismcut.core.render import run_render
+
+    monkeypatch.setattr(render_mod.media_utils, "have_ffmpeg", lambda: True)
+    monkeypatch.setattr(render_mod.subprocess, "Popen", _fake_popen_factory(
+        [b"[h264_nvenc @ 0x0] Cannot load nvcuda.dll\n", b""], returncode=1))
+
+    p = make_project(tmp_path)
+    opts = RenderOptions(use_nvenc=True, out_path=str(tmp_path / "out.mp4"))
+
+    try:
+        run_render(p, opts)
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "Hardware encoding (NVENC) failed" in str(e)
+        assert "your GPU or driver may not support it" in str(e)
+
+
+def test_run_render_non_nvenc_failure_shows_raw_ffmpeg_output(monkeypatch, tmp_path):
+    import prismcut.core.render as render_mod
+    from prismcut.core.render import run_render
+
+    monkeypatch.setattr(render_mod.media_utils, "have_ffmpeg", lambda: True)
+    monkeypatch.setattr(render_mod.subprocess, "Popen", _fake_popen_factory(
+        [b"Unknown encoder 'bogus'\n", b""], returncode=1))
+
+    p = make_project(tmp_path)
+    opts = RenderOptions(use_nvenc=False, out_path=str(tmp_path / "out.mp4"))
+
+    try:
+        run_render(p, opts)
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "Hardware encoding (NVENC) failed" not in str(e)
+        assert "ffmpeg failed" in str(e)
+        assert "Unknown encoder" in str(e)

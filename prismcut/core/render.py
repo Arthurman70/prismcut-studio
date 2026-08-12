@@ -25,6 +25,12 @@ from .project import Clip, Project
 # chapter concept) and the audio-only formats.
 _CHAPTER_CAPABLE_FORMATS = {"mp4", "mp4-hevc", "mov", "mov-prores", "mkv"}
 
+# Substrings ffmpeg's own error output tends to include when h264_nvenc/
+# hevc_nvenc fails because there's no capable GPU/driver (as opposed to
+# some unrelated encoding failure) - used to swap in a clearer message
+# than a raw stderr dump when hardware encoding was requested.
+_NVENC_FAILURE_HINTS = ("nvenc", "cuda", "no capable devices", "cannot load nvcuda")
+
 
 @dataclass
 class RenderOptions:
@@ -34,6 +40,7 @@ class RenderOptions:
     fmt: str = "mp4"          # mp4 | mp4-hevc | mov | mov-prores | mkv | webm | gif | png-seq
                               # | mp3 | wav | flac | m4a
     crf: int = 20
+    use_nvenc: bool = False  # h264_nvenc/hevc_nvenc instead of libx264/libx265 - mp4/mov/mkv/mp4-hevc only
     out_path: str = "output.mp4"
     extra: dict = field(default_factory=dict)
 
@@ -410,13 +417,22 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
 
     fmt = opts.fmt
     if fmt in ("mp4", "mov", "mkv"):
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(opts.crf),
-                "-c:a", "aac", "-b:a", "192k"]
+        # NVENC has no -crf; -cq is its closest equivalent (same rough
+        # 0-51 scale, lower = better quality) - reusing opts.crf's value
+        # rather than exposing a second quality control for it.
+        if opts.use_nvenc:
+            cmd += ["-c:v", "h264_nvenc", "-preset", "fast", "-cq", str(opts.crf)]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(opts.crf)]
+        cmd += ["-c:a", "aac", "-b:a", "192k"]
         if fmt in ("mp4", "mov"):   # +faststart (moov-atom relocation) needs an isobmff container
             cmd += ["-movflags", "+faststart"]
     elif fmt == "mp4-hevc":
-        cmd += ["-c:v", "libx265", "-preset", "medium", "-crf", str(opts.crf + 4),
-                "-tag:v", "hvc1", "-c:a", "aac", "-b:a", "192k"]
+        if opts.use_nvenc:
+            cmd += ["-c:v", "hevc_nvenc", "-preset", "fast", "-cq", str(opts.crf + 4)]
+        else:
+            cmd += ["-c:v", "libx265", "-preset", "medium", "-crf", str(opts.crf + 4)]
+        cmd += ["-tag:v", "hvc1", "-c:a", "aac", "-b:a", "192k"]
     elif fmt == "mov-prores":
         # ProRes 422 (profile 3) + uncompressed PCM audio - the conventional
         # pairing for a professional mastering/archival deliverable, not
@@ -484,8 +500,13 @@ def run_render(project: Project, opts: RenderOptions, job=None) -> str:
         if proc.poll() is None:
             proc.kill()
     if proc.returncode != 0:
-        err_tail = b"".join(recent_lines)
-        raise RuntimeError("ffmpeg failed:\n" + err_tail.decode("utf-8", "replace")[-800:])
+        text = b"".join(recent_lines).decode("utf-8", "replace")
+        if opts.use_nvenc and any(h in text.lower() for h in _NVENC_FAILURE_HINTS):
+            raise RuntimeError(
+                "Hardware encoding (NVENC) failed - your GPU or driver may not support it. "
+                "Turn off \"Hardware encoding (NVENC)\" in the export dialog and try again.\n\n"
+                + text[-500:])
+        raise RuntimeError("ffmpeg failed:\n" + text[-800:])
     if job is not None:
         job.progress(100, "Done")
     return str(opts.out_path)
