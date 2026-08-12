@@ -21,11 +21,16 @@ PRESETS = [
 FORMATS = [
     ("MP4 (H.264 + AAC)", "mp4", ".mp4"),
     ("MP4 (H.265/HEVC)", "mp4-hevc", ".mp4"),
+    ("MOV (H.264 + AAC · QuickTime)", "mov", ".mov"),
+    ("MOV (ProRes 422 · mastering/archival)", "mov-prores", ".mov"),
+    ("MKV (H.264 + AAC)", "mkv", ".mkv"),
     ("WebM (VP9 + Opus)", "webm", ".webm"),
     ("GIF (no audio)", "gif", ".gif"),
     ("PNG sequence", "png-seq", ".png"),
     ("Audio only · MP3", "mp3", ".mp3"),
-    ("Audio only · WAV", "wav", ".wav"),
+    ("Audio only · WAV (uncompressed)", "wav", ".wav"),
+    ("Audio only · FLAC (lossless)", "flac", ".flac"),
+    ("Audio only · M4A/AAC", "m4a", ".m4a"),
 ]
 
 

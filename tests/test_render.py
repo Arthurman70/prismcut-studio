@@ -49,6 +49,49 @@ def test_audio_only_command(tmp_path):
     assert "overlay" not in joined
 
 
+def test_mov_command_uses_h264_and_faststart(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="mov", out_path=str(tmp_path / "out.mov"))
+    joined = " ".join(build_command(p, opts))
+    assert "libx264" in joined
+    assert "+faststart" in joined
+    assert "out.mov" in joined
+
+
+def test_mov_prores_command_uses_prores_and_pcm_audio_no_faststart(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="mov-prores", out_path=str(tmp_path / "out.mov"))
+    cmd = build_command(p, opts)
+    joined = " ".join(cmd)
+    assert "prores_ks" in joined
+    assert "pcm_s16le" in joined
+    assert "+faststart" not in joined   # not meaningful for a mastering/archival ProRes file
+
+
+def test_mkv_command_uses_h264_no_faststart(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="mkv", out_path=str(tmp_path / "out.mkv"))
+    joined = " ".join(build_command(p, opts))
+    assert "libx264" in joined
+    assert "+faststart" not in joined   # faststart is an isobmff (mp4/mov) muxer flag, not mkv's
+
+
+def test_flac_command_is_audio_only_lossless(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="flac", out_path=str(tmp_path / "out.flac"))
+    joined = " ".join(build_command(p, opts))
+    assert "-c:a flac" in joined
+    assert "overlay" not in joined
+
+
+def test_m4a_command_is_audio_only_aac(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="m4a", out_path=str(tmp_path / "out.m4a"))
+    joined = " ".join(build_command(p, opts))
+    assert "-c:a aac" in joined
+    assert "overlay" not in joined
+
+
 def test_gif_uses_palette(tmp_path):
     p = make_project(tmp_path)
     opts = RenderOptions(fmt="gif", out_path=str(tmp_path / "out.gif"))

@@ -143,3 +143,40 @@ def test_parse_breakdown_scene_indices_are_sequential():
     text = '[{"script": "one"}, {"script": "two"}, {"script": "three"}]'
     scenes = _parse_breakdown(text)
     assert [s.index for s in scenes] == [0, 1, 2]
+
+
+# --- real-world messy LLM output shapes (the actual bug this session fixes) ---
+
+def test_parse_breakdown_tolerates_preamble_and_fenced_json():
+    text = ('Sure! Here\'s the scene breakdown for your movie:\n\n'
+           '```json\n[{"script": "A robot wakes up.", "narration": ""}]\n```\n\n'
+           'Let me know if you would like any changes!')
+    scenes = _parse_breakdown(text)
+    assert len(scenes) == 1
+    assert scenes[0].script == "A robot wakes up."
+
+
+def test_parse_breakdown_tolerates_bare_array_with_surrounding_prose_no_fence():
+    text = ('Here is the breakdown:\n'
+           '[{"script": "Sunset over water.", "narration": ""}, '
+           '{"script": "A boat drifts by.", "narration": ""}]\n'
+           'Hope that works for you.')
+    scenes = _parse_breakdown(text)
+    assert len(scenes) == 2
+    assert scenes[1].script == "A boat drifts by."
+
+
+def test_parse_breakdown_skips_a_false_positive_bracket_before_the_real_array():
+    # Prose containing a stray '[' (e.g. a citation-style aside) must not be
+    # mistaken for the start of the JSON array - the parser should keep
+    # trying subsequent '[' occurrences until one actually parses.
+    text = ('This brief evokes [in a sense] a classic three-act structure. '
+           '[{"script": "Act one begins.", "narration": ""}]')
+    scenes = _parse_breakdown(text)
+    assert len(scenes) == 1
+    assert scenes[0].script == "Act one begins."
+
+
+def test_parse_breakdown_still_fails_cleanly_on_a_pure_refusal():
+    text = "I'm not able to help write a breakdown for that request."
+    assert _parse_breakdown(text) == []

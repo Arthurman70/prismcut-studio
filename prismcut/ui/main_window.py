@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import json
+import os
 import time
 
 from PySide6.QtCore import Qt, QTimer
@@ -156,10 +157,17 @@ class MainWindow(QMainWindow):
         self._sync_status()
         self._check_autosave_recovery(None)
         self._restore_layout()
-        # Deferred so it never competes with initial window paint - the
-        # 24h throttle inside _maybe_check_updates_on_startup means this is
-        # a no-op most launches anyway.
-        QTimer.singleShot(1500, self._maybe_check_updates_on_startup)
+        # Deferred so it never competes with initial window paint - the 24h
+        # throttle inside _maybe_check_updates_on_startup means this is a
+        # no-op most launches anyway. Skipped entirely under the test sandbox
+        # (same PRISMCUT_DATA_DIR override core.paths/core.settings already
+        # honor) - a real, uncontrolled network call firing mid-test-suite
+        # was previously racing process/window teardown and crashing a
+        # background QThreadPool worker (core/jobs.py's "Signal source has
+        # been deleted"), independent of whatever test happened to be
+        # running at the time.
+        if not os.environ.get("PRISMCUT_DATA_DIR"):
+            QTimer.singleShot(1500, self._maybe_check_updates_on_startup)
 
     # ---------------------------------------------------------------- helpers
     def _dock(self, title: str, widget: QWidget, area) -> QDockWidget:
@@ -196,6 +204,7 @@ class MainWindow(QMainWindow):
         self.timeline.selectionChanged.connect(self._clip_selected)
         self.timeline.effectsRequested.connect(self._show_effects_for)
         self.timeline.timelineChanged.connect(self._sync_status)
+        self.timeline.regenerateSceneRequested.connect(self._regenerate_pipeline_scene)
         # generate / audio results -> bin
         self.generate.resultReady.connect(self._generated)
         self.audio.resultReady.connect(self._generated)
@@ -391,6 +400,18 @@ class MainWindow(QMainWindow):
         self.effects.show_clip(clip_id)
         self.fx_dock.show()
         self.fx_dock.raise_()
+
+    def _regenerate_pipeline_scene(self, pipeline_id: str, scene_id: str):
+        """Timeline clip's "Regenerate this scene" action - the clip's
+        underlying media already carries pipeline_id/scene_id (every
+        pipeline-generated asset is tagged that way), so this works even for
+        a movie that isn't the one currently open in the Movie Pipeline
+        panel: load it there first, then regenerate."""
+        if not (self.movie.run and self.movie.run.pipeline.id == pipeline_id):
+            if not self.movie.load_pipeline_by_id(pipeline_id):
+                return
+        self.tabs.setCurrentWidget(self.movie)
+        self.movie.run.regenerate_scene_current_stage(scene_id)
 
     def _razor_selected(self):
         clip = self.timeline.selected_clip()

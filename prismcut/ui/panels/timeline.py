@@ -147,6 +147,13 @@ class ClipItem(QGraphicsRectItem):
         menu.addAction("🔊 Unmute" if self.clip.muted else "🔇 Mute",
                        lambda: self.timeline.toggle_mute(self.clip.id))
         menu.addAction("🎛 Effects…", lambda: self.timeline.effectsRequested.emit(self.clip.id))
+        media = self.timeline.project.media.get(self.clip.media_id)
+        pipeline_id = (media.meta.get("pipeline_id") if media else "") or ""
+        scene_id = (media.meta.get("scene_id") if media else "") or ""
+        if pipeline_id and scene_id:
+            menu.addSeparator()
+            menu.addAction("🔄 Regenerate this scene",
+                           lambda: self.timeline.regenerateSceneRequested.emit(pipeline_id, scene_id))
         menu.addSeparator()
         menu.addAction("🗑 Delete", lambda: self.timeline.delete_clip(self.clip.id))
         menu.exec(ev.screenPos())
@@ -291,6 +298,7 @@ class TimelineWidget(QWidget):
     selectionChanged = Signal(object)      # clip_id | None
     effectsRequested = Signal(str)         # clip_id
     timelineChanged = Signal()
+    regenerateSceneRequested = Signal(str, str)   # pipeline_id, scene_id
 
     def __init__(self, project: Project, undo_stack, parent=None):
         super().__init__(parent)
@@ -599,12 +607,15 @@ class TimelineWidget(QWidget):
             super().keyPressEvent(ev)
 
     def add_media_at_playhead(self, media_id: str, track_id: str = "",
-                              start: float | None = None, duration: float | None = None):
+                              start: float | None = None, duration: float | None = None,
+                              label: str = ""):
         """track_id/start/duration are optional overrides for callers that
         know exactly where a clip belongs (the movie pipeline, Agent Mode's
         add_media_to_timeline tool) - the bare single-arg call (every
         existing caller) keeps its old behavior: first matching track,
-        insert at the current playhead, default duration."""
+        insert at the current playhead, default duration. label overrides
+        the clip's displayed name (defaults to the media item's own label) -
+        the movie pipeline uses this for "Scene N" tagging."""
         item = self.project.media.get(media_id)
         if not item:
             return None
@@ -619,11 +630,11 @@ class TimelineWidget(QWidget):
                 return None
             tr = tracks[0]
         t = self.playhead_time if start is None else start
-        clip = self.project.add_clip(media_id, tr.id, t, duration)
+        clip = self.project.add_clip(media_id, tr.id, t, duration, label)
         if not clip:
             return None
         self.undo_stack.push(AddOrRemoveItemCommand(
-            f"Add {item.label or 'media'} to timeline", add=True,
+            f"Add {clip.label or 'media'} to timeline", add=True,
             insert=lambda: self.project.clips.__setitem__(clip.id, clip),
             remove=lambda: self.project.clips.pop(clip.id, None),
             refresh=self._undo_refresh))
@@ -637,6 +648,22 @@ class TimelineWidget(QWidget):
     def selected_clip(self):
         sel = [i for i in self.scene.selectedItems() if isinstance(i, ClipItem)]
         return sel[0].clip if sel else None
+
+    def reveal_clip(self, clip_id: str) -> bool:
+        """Seeks the playhead to this clip's start, scrolls it into view,
+        and selects it - the "jump to" entry point for anything that names
+        a clip by id rather than the user directly clicking the timeline
+        (e.g. the movie pipeline panel's scene rows)."""
+        c = self.project.clips.get(clip_id)
+        if not c:
+            return False
+        self.set_playhead(c.start)
+        self.view.centerOn(c.start * self.pps, self.track_y(c.track_id))
+        item = self._items.get(clip_id)
+        if item:
+            self.scene.clearSelection()
+            item.setSelected(True)
+        return True
 
     # ------------------------------------------------------------ playhead
     def set_playhead(self, t: float):

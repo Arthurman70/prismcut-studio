@@ -54,6 +54,22 @@ class Job(QObject):
             self.status = "cancelled"
 
 
+def _safe_emit(signal, *args) -> None:
+    """A job's worker thread can outlive the Job QObject (or whatever owns
+    it) if the app/window closes while the job is still in flight - Qt then
+    raises 'Signal source has been deleted' on .emit(). At that point there's
+    nothing left to notify anyway, so swallow just that specific failure
+    mode rather than letting it propagate as an unhandled exception inside
+    QThreadPool (which the ORIGINAL bug did doubly: the finished.emit()
+    RuntimeError would itself be caught by the generic except Exception
+    below, which then tried failed.emit() on the same deleted object,
+    raising again - uncaught the second time)."""
+    try:
+        signal.emit(*args)
+    except RuntimeError:
+        pass
+
+
 class _Runner(QRunnable):
     def __init__(self, job: Job):
         super().__init__()
@@ -65,21 +81,21 @@ class _Runner(QRunnable):
         if job.cancelled:
             return
         job.status = "running"
-        job.started.emit()
+        _safe_emit(job.started)
         try:
             result = job.fn(job)
             if job.cancelled:
                 job.status = "cancelled"
-                job.failed.emit("Cancelled")
+                _safe_emit(job.failed, "Cancelled")
                 return
             job.result = result
             job.status = "done"
-            job.finished.emit(result)
+            _safe_emit(job.finished, result)
         except Exception as exc:  # noqa: BLE001 - surface everything to the UI
             job.status = "cancelled" if job.cancelled else "error"
             job.error = str(exc) or exc.__class__.__name__
             traceback.print_exc()
-            job.failed.emit(job.error)
+            _safe_emit(job.failed, job.error)
 
 
 class JobManager(QObject):

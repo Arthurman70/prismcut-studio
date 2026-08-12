@@ -253,11 +253,12 @@ def test_model_combo_allow_none_offers_none_as_default_selection(win):
     assert combo.current_model() is None
 
 
-def test_new_pipeline_dialog_constructs_and_lipsync_defaults_to_none(win):
+def test_new_pipeline_dialog_constructs_and_optional_combos_default_to_none(win):
     from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
 
-    dlg = NewPipelineDialog(win.registry, win.settings, win)
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
     assert dlg.lipsync_combo.current_model() is None
+    assert dlg.audio_combo.current_model() is None   # Voice/TTS is optional too
     assert dlg.pipeline is None   # nothing created until _accept() runs
     dlg.close()
 
@@ -272,7 +273,7 @@ def test_new_pipeline_dialog_accept_requires_a_brief(win):
     saved = dlg_mod.QMessageBox.information
     dlg_mod.QMessageBox.information = staticmethod(lambda *a, **k: calls.append(a))
     try:
-        dlg = dlg_mod.NewPipelineDialog(win.registry, win.settings, win)
+        dlg = dlg_mod.NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
         dlg.brief_edit.setPlainText("")   # empty brief - must be rejected
         dlg._accept()
         assert dlg.pipeline is None
@@ -285,7 +286,7 @@ def test_new_pipeline_dialog_accept_requires_a_brief(win):
 def test_new_pipeline_dialog_accept_builds_pipeline_with_chosen_models(win):
     from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
 
-    dlg = NewPipelineDialog(win.registry, win.settings, win)
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
     dlg.name_edit.setText("My Test Movie")
     dlg.brief_edit.setPlainText("A short story about a lighthouse keeper.")
     dlg._accept()
@@ -293,16 +294,98 @@ def test_new_pipeline_dialog_accept_builds_pipeline_with_chosen_models(win):
     assert dlg.pipeline.name == "My Test Movie"
     assert dlg.pipeline.brief == "A short story about a lighthouse keeper."
     assert dlg.pipeline.script_model and "::" in dlg.pipeline.script_model
-    assert dlg.pipeline.image_model and dlg.pipeline.audio_model and dlg.pipeline.video_model
-    assert dlg.pipeline.lipsync_model == ""   # allow_none combo defaults to skipped
+    assert dlg.pipeline.image_model and dlg.pipeline.video_model
+    # Voice/TTS and lip-sync are both optional and default to skipped.
+    assert dlg.pipeline.audio_model == ""
+    assert dlg.pipeline.lipsync_model == ""
     dlg.close()
+
+
+def test_new_pipeline_dialog_accept_does_not_require_a_voice_model(win):
+    """The historical bug: audio used to be validated as required, so a
+    silent/no-narration movie couldn't be created at all."""
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    dlg.brief_edit.setPlainText("A silent short film.")
+    assert dlg.audio_combo.current_model() is None
+    dlg._accept()
+    assert dlg.pipeline is not None
+    assert dlg.pipeline.audio_model == ""
+    dlg.close()
+
+
+def test_new_pipeline_dialog_accept_carries_through_a_chosen_voice_model(win):
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    dlg.brief_edit.setPlainText("A movie with narration.")
+    idx = dlg.audio_combo.findData("google::gemini-3.1-flash-tts-preview")
+    assert idx >= 0, "expected TTS model missing from registry"
+    dlg.audio_combo.setCurrentIndex(idx)
+    dlg._accept()
+    assert dlg.pipeline is not None
+    assert dlg.pipeline.audio_model == "google::gemini-3.1-flash-tts-preview"
+    dlg.close()
+
+
+def _wait_until(predicate, timeout=5.0):
+    app = QApplication.instance()
+    deadline = time.time() + timeout
+    while not predicate() and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_new_pipeline_dialog_enhance_brief_replaces_text_with_chat_result(win):
+    """No real API call - a fake adapter stands in, but this still exercises
+    the real jobs.submit() -> QThreadPool -> on_done round trip."""
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            return "A moody, rain-slicked alley at dusk, neon signs bleeding into puddles."
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, lambda provider: FakeAdapter(), win)
+    dlg.brief_edit.setPlainText("A detective walks down an alley.")
+    dlg._enhance_brief()
+
+    assert _wait_until(lambda: "neon signs" in dlg.brief_edit.toPlainText()), \
+        "brief was never replaced with the enhanced text"
+    assert dlg.enhance_btn.isEnabled()
+    dlg.close()
+
+
+def test_new_pipeline_dialog_enhance_brief_failure_shows_warning_and_reenables(win):
+    from prismcut.ui.dialogs import new_pipeline_dialog as dlg_mod
+
+    class FailingAdapter:
+        def chat(self, *a, **k):
+            raise RuntimeError("no key configured")
+
+    calls = []
+    saved = dlg_mod.QMessageBox.warning
+    dlg_mod.QMessageBox.warning = staticmethod(lambda *a, **k: calls.append(a))
+    try:
+        dlg = dlg_mod.NewPipelineDialog(win.registry, win.settings, win.jobs,
+                                        lambda provider: FailingAdapter(), win)
+        original = "A detective walks down an alley."
+        dlg.brief_edit.setPlainText(original)
+        dlg._enhance_brief()
+        assert _wait_until(lambda: len(calls) == 1)
+        assert dlg.brief_edit.toPlainText() == original   # left untouched on failure
+        assert dlg.enhance_btn.isEnabled()
+        dlg.close()
+    finally:
+        dlg_mod.QMessageBox.warning = saved
 
 
 def test_movie_pipeline_panel_loads_pipeline_and_builds_scene_rows(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 
     pipeline = MoviePipeline(name="Smoke test movie", brief="A robot explores a city.",
-                             script_model="google::gemini-test", image_model="fal::img-test",
+                             script_model="google::gemini-3.6-flash", image_model="fal::img-test",
                              audio_model="fal::tts-test", video_model="fal::vid-test")
     pipeline.scenes = [new_scene(0), new_scene(1)]
     pipeline.scenes[0].script = "A robot wakes up in a quiet alley."
@@ -326,7 +409,7 @@ def test_movie_pipeline_draftboard_override_marks_scene_source_user(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 
     pipeline = MoviePipeline(name="Draftboard smoke test", brief="brief",
-                             script_model="google::gemini-test", image_model="fal::img-test",
+                             script_model="google::gemini-3.6-flash", image_model="fal::img-test",
                              audio_model="fal::tts-test", video_model="fal::vid-test")
     pipeline.scenes = [new_scene(0)]
     scene = pipeline.scenes[0]
@@ -342,6 +425,390 @@ def test_movie_pipeline_draftboard_override_marks_scene_source_user(win):
     finally:
         win.movie._set_pipeline(MoviePipeline(name="empty"))
         win.movie.run.pipeline.scenes = []
+
+
+def test_movie_pipeline_retry_button_and_status_visible_when_scenes_empty(win):
+    """The historical bug: a failed/never-run script breakdown left scenes
+    empty with zero visible explanation and no way to retry - just two
+    correctly-disabled-but-mysterious buttons."""
+    from prismcut.core.pipeline import MoviePipeline
+
+    pipeline = MoviePipeline(name="Stuck movie", brief="brief", script_model="google::gemini-3.6-flash",
+                             image_model="fal::img-test", video_model="fal::vid-test")
+    win.movie._set_pipeline(pipeline)
+    try:
+        # isHidden() (this widget's own explicit visibility flag) rather than
+        # isVisible() (which also depends on the Movie Pipeline tab actually
+        # being the active one, unrelated to what's under test here).
+        assert not win.movie.retry_script_btn.isHidden()
+        assert win.movie.retry_script_btn.isEnabled()
+        assert win.movie.script_status.text()   # some persistent explanation, not blank
+        assert not win.movie.images_btn.isEnabled()
+        assert not win.movie.video_btn.isEnabled()
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_retry_button_hides_once_scenes_exist(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Scripted movie", brief="brief", script_model="google::gemini-3.6-flash",
+                             image_model="fal::img-test", video_model="fal::vid-test")
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    try:
+        assert win.movie.retry_script_btn.isHidden()
+        assert win.movie.script_status.text() == ""
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_script_breakdown_success_populates_scenes_and_clears_status(win):
+    from prismcut.core.pipeline import MoviePipeline
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            return '[{"script": "A lighthouse at dawn.", "narration": ""}]'
+
+    pipeline = MoviePipeline(name="Retry-success movie", brief="A lighthouse story.",
+                             script_model="google::gemini-3.6-flash", image_model="fal::img-test",
+                             video_model="fal::vid-test")
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        assert not win.movie.retry_script_btn.isHidden()
+        win.movie._retry_script()
+        assert _wait_until(lambda: len(win.movie.run.pipeline.scenes) == 1)
+        assert win.movie.run.pipeline.scenes[0].script == "A lighthouse at dawn."
+        assert _wait_until(lambda: win.movie.retry_script_btn.isHidden())
+        assert win.movie.script_status.text() == ""
+        assert win.movie.images_btn.isEnabled()
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_script_breakdown_failure_shows_persistent_error_not_just_toast(win):
+    from prismcut.core.pipeline import MoviePipeline
+
+    class RefusingAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            return "I'm not able to help write a breakdown for that request."
+
+    pipeline = MoviePipeline(name="Refused movie", brief="brief", script_model="google::gemini-3.6-flash",
+                             image_model="fal::img-test", video_model="fal::vid-test")
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: RefusingAdapter()
+    try:
+        win.movie._retry_script()
+        assert _wait_until(lambda: not win.movie._script_running)
+        assert win.movie.run.pipeline.scenes == []
+        assert not win.movie.retry_script_btn.isHidden()
+        assert win.movie.retry_script_btn.isEnabled()   # can try again, not stuck disabled
+        assert "not able to help" in win.movie.script_status.text()
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_gate_buttons_give_a_clear_message_when_scenes_are_empty(win):
+    """Regression test for the original misleading message: clicking a
+    (disabled) generate button on a script-less movie used to be guarded by
+    code that would have said "Every scene already has an image/video" -
+    nonsensical for zero scenes. Calling the handlers directly (bypassing the
+    disabled state, same as the real bug report's symptom) must report the
+    real reason, not the misleading one."""
+    from prismcut.core.pipeline import MoviePipeline
+
+    pipeline = MoviePipeline(name="Empty movie", brief="brief", script_model="google::gemini-3.6-flash",
+                             image_model="fal::img-test", video_model="fal::vid-test")
+    win.movie._set_pipeline(pipeline)
+    messages = []
+    win.movie.status.connect(messages.append)
+    try:
+        win.movie._run_images()
+        win.movie._run_video()
+        assert len(messages) == 2
+        for m in messages:
+            assert "already has" not in m
+            assert "breakdown" in m
+    finally:
+        win.movie.status.disconnect(messages.append)
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+# -------------------------------------------------- timeline integration
+
+def test_movie_pipeline_scenes_get_labeled_clips_on_timeline(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Label test", brief="brief", script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1)]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        for scene in pipeline.scenes:
+            item = win.bin.add_generated(__file__, {"mode": "image"})
+            scene.image.push(StageAsset(media_id=item.id, source="generated"))
+        run._images_done = True
+        run._audio_done = True
+        run._maybe_insert_all_interim()
+        clip1 = win.project.clips[pipeline.scenes[0].clip_ids["image"]]
+        clip2 = win.project.clips[pipeline.scenes[1].clip_ids["image"]]
+        assert clip1.label == "Scene 1"
+        assert clip2.label == "Scene 2"
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_swap_scene_visual_clip_replaces_old_clip_and_updates_clip_ids(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Swap test", brief="brief", script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        img_item = win.bin.add_generated(__file__, {"mode": "image"})
+        old_clip = win.timeline.add_media_at_playhead(
+            img_item.id, pipeline.video_track_id, 5.0, 4.0, label="Scene 1")
+        scene.clip_ids["image"] = old_clip.id
+
+        vid_item = win.bin.add_generated(__file__, {"mode": "video"})
+        run._swap_scene_visual_clip(scene, vid_item, "video", "test swap")
+
+        assert old_clip.id not in win.project.clips
+        assert "image" not in scene.clip_ids
+        new_clip = win.project.clips[scene.clip_ids["video"]]
+        assert new_clip.media_id == vid_item.id
+        assert new_clip.start == 5.0
+        assert new_clip.duration == 4.0
+        assert new_clip.label == "Scene 1"
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_regenerate_image_swaps_the_already_placed_timeline_clip(win):
+    """The actual bug: regenerating an image used to update scene.image but
+    leave the stale image sitting on the timeline untouched."""
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    class FakeImageAdapter:
+        def generate_image(self, model_id, prompt, params):
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Image regen test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeImageAdapter()
+    try:
+        run._ensure_tracks()
+        first_item = win.bin.add_generated(__file__, {"mode": "image"})
+        scene.image.push(StageAsset(media_id=first_item.id, source="generated"))
+        old_clip = win.timeline.add_media_at_playhead(
+            first_item.id, pipeline.video_track_id, 0.0, 3.0, label="Scene 1")
+        scene.clip_ids["image"] = old_clip.id
+
+        run.regenerate_scene_current_stage(scene.id)
+        assert _wait_until(lambda: old_clip.id not in win.project.clips)
+
+        new_clip = win.project.clips[scene.clip_ids["image"]]
+        assert new_clip.start == 0.0
+        assert new_clip.label == "Scene 1"
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_regenerate_current_stage_regenerates_video_when_video_already_exists(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    class FakeVideoAdapter:
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            return __file__
+
+    pipeline = MoviePipeline(name="Video regen test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeVideoAdapter()
+    try:
+        run._ensure_tracks()
+        first_vid = win.bin.add_generated(__file__, {"mode": "video"})
+        scene.video.push(StageAsset(media_id=first_vid.id, source="generated"))
+        old_clip = win.timeline.add_media_at_playhead(
+            first_vid.id, pipeline.video_track_id, 2.0, 5.0, label="Scene 1")
+        scene.clip_ids["video"] = old_clip.id
+
+        run.regenerate_scene_current_stage(scene.id)
+        assert _wait_until(lambda: old_clip.id not in win.project.clips)
+
+        new_clip = win.project.clips[scene.clip_ids["video"]]
+        assert new_clip.id != old_clip.id
+        assert new_clip.start == 2.0
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_timeline_reveal_clip_seeks_scrolls_and_selects(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 12.5, 3.0)
+    win.timeline.refresh(True)
+    try:
+        assert win.timeline.reveal_clip(clip.id) is True
+        assert win.timeline.playhead_time == 12.5
+        assert win.timeline.selected_clip() is clip
+    finally:
+        win.project.remove_media(img.id)
+        win.timeline.refresh(True)
+
+
+def test_timeline_reveal_clip_returns_false_for_unknown_clip(win):
+    assert win.timeline.reveal_clip("nonexistent-clip-id") is False
+
+
+def test_movie_pipeline_jump_to_scene_seeks_timeline_and_switches_tab(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Jump test", brief="brief", script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        item = win.bin.add_generated(__file__, {"mode": "image"})
+        scene.image.push(StageAsset(media_id=item.id, source="generated"))
+        clip = win.timeline.add_media_at_playhead(
+            item.id, pipeline.video_track_id, 7.0, 3.0, label="Scene 1")
+        scene.clip_ids["image"] = clip.id
+
+        win.tabs.setCurrentIndex(1)   # somewhere else, so the switch is observable
+        win.movie._jump_to_scene(scene.id)
+        assert win.timeline.playhead_time == 7.0
+        assert win.tabs.currentIndex() == 0
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_jump_to_scene_not_placed_yet_gives_a_clear_message(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Unplaced jump test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    messages = []
+    win.movie.status.connect(messages.append)
+    try:
+        win.movie._jump_to_scene(pipeline.scenes[0].id)
+        assert any("timeline" in m for m in messages)
+    finally:
+        win.movie.status.disconnect(messages.append)
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_regenerate_pipeline_scene_uses_currently_loaded_pipeline_directly(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    class FakeImageAdapter:
+        def generate_image(self, model_id, prompt, params):
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Direct regen test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeImageAdapter()
+    try:
+        win.movie.run._ensure_tracks()
+        item = win.bin.add_generated(__file__, {"mode": "image"})
+        scene.image.push(StageAsset(media_id=item.id, source="generated"))
+        old_clip = win.timeline.add_media_at_playhead(
+            item.id, pipeline.video_track_id, 0.0, 3.0, label="Scene 1")
+        scene.clip_ids["image"] = old_clip.id
+
+        win.tabs.setCurrentIndex(1)
+        win._regenerate_pipeline_scene(pipeline.id, scene.id)
+        assert win.tabs.currentIndex() == win.tabs.indexOf(win.movie)
+        assert _wait_until(lambda: old_clip.id not in win.project.clips)
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_regenerate_pipeline_scene_loads_a_different_saved_pipeline_first(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    other = MoviePipeline(name="Other saved movie", brief="brief",
+                          script_model="google::gemini-3.6-flash",
+                          image_model="google::gemini-3.1-flash-image",
+                          video_model="xai::grok-imagine-video-1.5")
+    other.scenes = [new_scene(0)]
+    other.save()
+
+    current = MoviePipeline(name="Currently open movie")
+    win.movie._set_pipeline(current)
+    win.tabs.setCurrentIndex(1)
+
+    class NoopAdapter:
+        def generate_image(self, *a, **k):
+            return []   # "no image returned" - fine, only the load+switch is under test here
+
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: NoopAdapter()
+    try:
+        win._regenerate_pipeline_scene(other.id, other.scenes[0].id)
+        assert win.movie.run.pipeline.id == other.id
+        assert win.tabs.currentIndex() == win.tabs.indexOf(win.movie)
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+        from prismcut.core import paths as paths_mod
+        p = paths_mod.pipelines_dir() / f"{other.id}.json"
+        if p.exists():
+            p.unlink()
+
+
+def test_movie_pipeline_load_by_id_reports_missing_file_gracefully(win):
+    messages = []
+    win.movie.status.connect(messages.append)
+    try:
+        ok = win.movie.load_pipeline_by_id("does-not-exist-12345")
+        assert ok is False
+        assert any("find" in m.lower() for m in messages)
+    finally:
+        win.movie.status.disconnect(messages.append)
 
 
 # ------------------------------------------------------------------ updater
@@ -394,4 +861,33 @@ def test_update_dialog_skip_version_persists_to_settings(win):
 
 def test_check_for_updates_is_wired_into_the_help_menu(win):
     assert callable(win._check_updates)
+
+
+# ------------------------------------------------------------------- export
+
+def test_export_dialog_offers_the_full_format_array(win):
+    from prismcut.ui.dialogs.export_dialog import FORMATS, ExportDialog
+
+    keys = [key for _name, key, _ext in FORMATS]
+    for expected in ("mp4", "mp4-hevc", "mov", "mov-prores", "mkv", "webm",
+                     "gif", "png-seq", "mp3", "wav", "flac", "m4a"):
+        assert expected in keys, f"{expected!r} missing from the export format array"
+
+    dlg = ExportDialog(win.project, win.jobs, win.settings, win)
+    try:
+        assert dlg.fmt.count() == len(FORMATS)
+    finally:
+        dlg.close()
+
+
+def test_export_dialog_format_switch_updates_output_extension(win):
+    from prismcut.ui.dialogs.export_dialog import FORMATS, ExportDialog
+
+    dlg = ExportDialog(win.project, win.jobs, win.settings, win)
+    try:
+        for idx, (_name, _key, ext) in enumerate(FORMATS):
+            dlg.fmt.setCurrentIndex(idx)
+            assert dlg.out_edit.text().endswith(ext), f"format row {idx} didn't update the extension"
+    finally:
+        dlg.close()
     assert callable(win._maybe_check_updates_on_startup)

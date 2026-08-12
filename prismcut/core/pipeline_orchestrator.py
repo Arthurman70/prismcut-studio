@@ -101,6 +101,15 @@ class PipelineRun(QObject):
         if not self.pipeline.audio_track_id or not self.win.project.track(self.pipeline.audio_track_id):
             self.pipeline.audio_track_id = self.win.add_track("audio").id
 
+    def scene_current_clip_id(self, scene_id: str) -> Optional[str]:
+        """Whichever clip_ids entry currently represents this scene's
+        picture on the timeline (the finished video if one exists, else the
+        interim image) - None if the scene hasn't been placed yet."""
+        scene = self.pipeline.scene(scene_id)
+        if not scene:
+            return None
+        return scene.clip_ids.get("video") or scene.clip_ids.get("image")
+
     # ---------------------------------------------------------- stage 1: script
     def generate_breakdown(self, on_done: Optional[Callable] = None,
                            on_fail: Optional[Callable] = None) -> None:
@@ -108,24 +117,34 @@ class PipelineRun(QObject):
         brief = self.pipeline.brief
         sys_prompt = (
             "You break a movie/show brief into a numbered list of scenes for an AI "
-            "generation pipeline. Output STRICT JSON ONLY: a list of objects, each with "
-            '"script" (a 1-2 sentence on-screen visual/action description, written as an '
-            'image/video generation prompt) and "narration" (the exact dialogue or '
-            "voiceover line spoken during that scene, or an empty string for a silent, "
-            "visual-only scene). No commentary, no markdown code fences, JSON only.")
+            "generation pipeline. Respond with NOTHING but a JSON array - the very first "
+            "character of your reply must be '[' and the very last must be ']'. No greeting, "
+            "no explanation, no markdown code fence, no text before or after the array. Each "
+            'array element is an object with "script" (a 1-2 sentence on-screen visual/action '
+            'description, written as an image/video generation prompt) and "narration" (the '
+            "exact dialogue or voiceover line spoken during that scene, or an empty string "
+            "for a silent, visual-only scene).")
 
         def work(job):
             job.progress(-1, "Writing scene breakdown")
+            # Low temperature: this call needs a strictly-shaped, parseable
+            # response, not creative variety - the per-scene prompts
+            # themselves (Scene.script) are what actually needs creativity,
+            # and those come from this same call's content, not its format.
             return adapter.chat(model.id, [ChatMessage("user", brief)], system=sys_prompt,
-                                temperature=0.8)
+                                temperature=0.3)
 
         def done(result):
-            scenes = _parse_breakdown(str(result))
+            text = str(result)
+            scenes = _parse_breakdown(text)
             if not scenes:
-                self.logMessage.emit("The AI's scene breakdown couldn't be parsed - try again "
-                                     "or edit the brief to be more specific.")
+                snippet = text.strip()[:200] or "(empty response)"
+                self.logMessage.emit(
+                    "The AI's scene breakdown couldn't be parsed as JSON - it may have "
+                    f"declined the brief or used an unexpected format. Its response started: "
+                    f"“{snippet}”")
                 if on_fail:
-                    on_fail("Could not parse scene breakdown.")
+                    on_fail(f"Could not parse scene breakdown. Response started: “{snippet}”")
                 return
             self.pipeline.scenes = scenes
             self._set_status("scenes_ready")
@@ -167,6 +186,21 @@ class PipelineRun(QObject):
         tracker = _BatchTracker(1, lambda: None)
         self._generate_scene_image(scene, model, adapter, tracker, prompt_override)
 
+    def regenerate_scene_current_stage(self, scene_id: str) -> None:
+        """Regenerates whichever stage this scene is CURRENTLY showing on
+        the timeline - the finished video if one exists, else the image.
+        The one action a user reaching for "fix this bad scene" wants,
+        without needing to know which stage actually produced what they're
+        looking at. Shared by the scene row's regenerate button and the
+        timeline clip's right-click "Regenerate this scene" action."""
+        scene = self.pipeline.scene(scene_id)
+        if not scene:
+            return
+        if scene.video.active:
+            self.regenerate_scene_video(scene_id)
+        else:
+            self.regenerate_scene_image(scene_id)
+
     def _generate_scene_image(self, scene: Scene, model, adapter, tracker: _BatchTracker,
                               prompt_override: str = "") -> None:
         prompt = prompt_override or scene.script or self.pipeline.brief
@@ -183,6 +217,15 @@ class PipelineRun(QObject):
                     "source": "pipeline", "pipeline_id": self.pipeline.id, "scene_id": scene.id})
                 scene.image.push(StageAsset(media_id=item.id, prompt=prompt, provider=model.provider,
                                             model=model.id, source="generated", created=time.time()))
+                if "image" in scene.clip_ids and "video" not in scene.clip_ids:
+                    # A regenerate, not this scene's first-ever image - it's
+                    # already sitting on the timeline, so swap the stale one
+                    # for the fresh one at the same spot rather than leaving
+                    # the old image visible while the new one sits unused in
+                    # the bin. If the scene's video is already finalized,
+                    # leave the timeline alone - only scene.image.active (a
+                    # future video regenerate's input) changes.
+                    self._swap_scene_visual_clip(scene, item, "image", "update image")
                 self.sceneChanged.emit(scene.id)
                 self.pipeline.save()
             tracker.one_done(bool(outs), "" if outs else "No image returned.")
@@ -206,6 +249,8 @@ class PipelineRun(QObject):
             "mode": "image", "source": "pipeline", "pipeline_id": self.pipeline.id,
             "scene_id": scene.id})
         scene.image.push(StageAsset(media_id=item.id, source="user", created=time.time()))
+        if "image" in scene.clip_ids and "video" not in scene.clip_ids:
+            self._swap_scene_visual_clip(scene, item, "image", "update image")
         self.sceneChanged.emit(scene.id)
         self.pipeline.save()
         self._maybe_insert_all_interim()
@@ -221,6 +266,16 @@ class PipelineRun(QObject):
 
     # --------------------------------------------------- stage 4: audio (ungated)
     def run_audio_batch(self, on_all_done: Optional[Callable] = None) -> None:
+        # Voice/TTS is optional - a pipeline built without one (silent movie,
+        # or narration added manually later) has audio_model == "", which
+        # registry.by_key("") can't resolve - skip the stage entirely rather
+        # than let _adapter_for() raise.
+        if not self.pipeline.audio_model:
+            self._audio_done = True
+            self._maybe_insert_all_interim()
+            if on_all_done:
+                on_all_done()
+            return
         model, adapter = self._adapter_for(self.pipeline.audio_model)
         targets = [s for s in self.pipeline.scenes if s.narration.strip() and s.audio.active is None]
         if not targets:
@@ -285,12 +340,14 @@ class PipelineRun(QObject):
             duration = aud_item.duration if aud_item and aud_item.duration else 3.0
             if img_item and "image" not in scene.clip_ids and "video" not in scene.clip_ids:
                 clip = self.win.timeline.add_media_at_playhead(
-                    img_item.id, self.pipeline.video_track_id, cursor, duration)
+                    img_item.id, self.pipeline.video_track_id, cursor, duration,
+                    label=f"Scene {scene.index + 1}")
                 if clip:
                     scene.clip_ids["image"] = clip.id
             if aud_item and "audio" not in scene.clip_ids:
                 clip = self.win.timeline.add_media_at_playhead(
-                    aud_item.id, self.pipeline.audio_track_id, cursor, duration)
+                    aud_item.id, self.pipeline.audio_track_id, cursor, duration,
+                    label=f"Scene {scene.index + 1} (audio)")
                 if clip:
                     scene.clip_ids["audio"] = clip.id
             cursor += duration
@@ -312,6 +369,23 @@ class PipelineRun(QObject):
         tracker = _BatchTracker(len(targets), lambda: self._video_batch_done(on_all_done))
         for scene in targets:
             self._generate_scene_video(scene, plan, video_adapter, tracker)
+
+    def regenerate_scene_video(self, scene_id: str) -> None:
+        """Single-scene video regenerate, bypassing the batch/gate - mirrors
+        regenerate_scene_image. Reuses _generate_scene_video verbatim, so a
+        regenerate goes through the exact same optional lip-sync chain and
+        timeline swap (_swap_scene_visual_clip, via _swap_interim_for_final)
+        as a batch-run scene - whether this scene's current timeline clip is
+        still an interim image or an earlier finished video, either way it
+        gets replaced in place at the same position."""
+        scene = self.pipeline.scene(scene_id)
+        if not scene:
+            return
+        plan = resolve_video_plan(self.win.registry, self.pipeline.video_model,
+                                  self.pipeline.lipsync_model)
+        video_adapter = self.win.get_adapter(plan.video_model.provider)
+        tracker = _BatchTracker(1, lambda: None)
+        self._generate_scene_video(scene, plan, video_adapter, tracker)
 
     def _generate_scene_video(self, scene: Scene, plan: VideoPlan, video_adapter,
                               tracker: _BatchTracker) -> None:
@@ -406,23 +480,36 @@ class PipelineRun(QObject):
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: lip-sync", work, kind="lip_sync",
                              on_done=done, on_fail=fail)
 
-    def _swap_interim_for_final(self, scene: Scene, video_item) -> None:
-        """Replaces the scene's interim image clip with the finished video
-        clip at the same start/track, atomically (one undo step)."""
+    def _swap_scene_visual_clip(self, scene: Scene, item, clip_key: str, macro_label: str) -> None:
+        """Replaces whatever currently occupies this scene's video-track
+        slot (an interim image OR a previously-finalized video) with `item`,
+        at the same start/track/duration, atomically (one undo step).
+        clip_key is which scene.clip_ids entry the NEW clip is recorded
+        under ('image' or 'video') - the old entry is always cleared first
+        so a scene never simultaneously claims both an image and a video
+        slot on the timeline."""
         old_clip_id = scene.clip_ids.get("video") or scene.clip_ids.get("image")
         old_clip = self.win.project.clips.get(old_clip_id) if old_clip_id else None
-        self.win.undo_stack.beginMacro(f"Movie scene {scene.index + 1}: finalize video")
+        self.win.undo_stack.beginMacro(f"Movie scene {scene.index + 1}: {macro_label}")
         if old_clip:
             start, track_id, duration = old_clip.start, old_clip.track_id, old_clip.duration
             self.win.timeline.delete_clip(old_clip.id)
         else:
             start, track_id, duration = self._scene_fallback_start(scene), self.pipeline.video_track_id, 3.0
-        new_clip = self.win.timeline.add_media_at_playhead(video_item.id, track_id, start, duration)
+        new_clip = self.win.timeline.add_media_at_playhead(
+            item.id, track_id, start, duration, label=f"Scene {scene.index + 1}")
         self.win.undo_stack.endMacro()
         if new_clip:
-            scene.clip_ids["video"] = new_clip.id
             scene.clip_ids.pop("image", None)
+            scene.clip_ids.pop("video", None)
+            scene.clip_ids[clip_key] = new_clip.id
         self.pipeline.save()
+
+    def _swap_interim_for_final(self, scene: Scene, video_item) -> None:
+        """Replaces the scene's interim image (or an earlier video, on a
+        regenerate) with the finished video clip - see
+        _swap_scene_visual_clip."""
+        self._swap_scene_visual_clip(scene, video_item, "video", "finalize video")
 
     def _scene_fallback_start(self, scene: Scene) -> float:
         aud_item = (self.win.project.media.get(scene.audio.active.media_id)
@@ -442,16 +529,57 @@ class PipelineRun(QObject):
             on_all_done()
 
 
-def _parse_breakdown(text: str) -> list[Scene]:
+def _extract_json_array(text: str) -> Optional[list]:
+    """Real chat models routinely ignore "output ONLY JSON" and wrap the
+    array in commentary ("Sure! Here's the breakdown:\n\n```json\n[...]\n```
+    \nLet me know if..."), even at low temperature - requiring the entire
+    trimmed response to be exactly clean JSON (the old behavior) made that
+    the single most common cause of scenes never populating. Tries
+    increasingly permissive strategies rather than giving up after the
+    first one fails."""
     import json
     import re
 
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```\s*$", "", text.strip())
+    text = text.strip()
     try:
-        raw = json.loads(cleaned)
+        val = json.loads(text)
+        if isinstance(val, list):
+            return val
     except json.JSONDecodeError:
-        return []
-    if not isinstance(raw, list):
+        pass
+    fence = re.search(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", text)
+    if fence:
+        try:
+            val = json.loads(fence.group(1))
+            if isinstance(val, list):
+                return val
+        except json.JSONDecodeError:
+            pass
+    # Bare array with no fence, possibly with prose before/after - scan every
+    # '[' as a candidate start and track bracket depth to find its true
+    # matching ']' (not just the first/last bracket in the text, which would
+    # break if the model's commentary itself contains a stray bracket).
+    for start in (m.start() for m in re.finditer(r"\[", text)):
+        depth = 0
+        for end in range(start, len(text)):
+            if text[end] == "[":
+                depth += 1
+            elif text[end] == "]":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        val = json.loads(text[start:end + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(val, list):
+                        return val
+                    break
+    return None
+
+
+def _parse_breakdown(text: str) -> list[Scene]:
+    raw = _extract_json_array(text)
+    if raw is None:
         return []
     scenes = []
     for i, item in enumerate(raw):

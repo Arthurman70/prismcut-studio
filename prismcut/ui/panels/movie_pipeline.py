@@ -8,12 +8,13 @@ already raises the Effects dock on clip selection rather than duplicating
 progress UI locally."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
 from ...core import media as media_utils
+from ...core import paths
 from ...core.pipeline import MoviePipeline, Scene
 from ...core.pipeline_orchestrator import PipelineRun
 from ..dialogs.new_pipeline_dialog import NewPipelineDialog
@@ -32,6 +33,7 @@ def _scene_status_icon(scene: Scene) -> str:
 
 class SceneRow(QWidget):
     jobsRequested = Signal()
+    jumpRequested = Signal(str)   # scene_id
 
     def __init__(self, run: PipelineRun, scene: Scene, parent=None):
         super().__init__(parent)
@@ -45,6 +47,9 @@ class SceneRow(QWidget):
         self.thumb.setFixedSize(64, 40)
         self.thumb.setScaledContents(True)
         self.thumb.setStyleSheet("background:rgba(127,127,127,40);border-radius:4px;")
+        self.thumb.setToolTip("Click to jump to this scene on the timeline")
+        self.thumb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.thumb.mousePressEvent = lambda _ev: self.jumpRequested.emit(self.scene.id)
 
         self.icon = QLabel()
         self.icon.setFixedWidth(20)
@@ -61,7 +66,8 @@ class SceneRow(QWidget):
 
         self.regen_btn = QPushButton("🔄")
         self.regen_btn.setFixedSize(26, 24)
-        self.regen_btn.setToolTip("Regenerate this scene's image (uses the prompt above)")
+        self.regen_btn.setToolTip("Regenerate this scene (uses the prompt above) - redoes the "
+                                  "video if one exists yet, otherwise the image")
         self.regen_btn.clicked.connect(self._regenerate)
 
         lay.addWidget(self.thumb)
@@ -102,7 +108,7 @@ class SceneRow(QWidget):
             self.sync()
 
     def _regenerate(self):
-        self.run.regenerate_scene_image(self.scene.id)
+        self.run.regenerate_scene_current_stage(self.scene.id)
 
     def _on_drop(self, paths_: list[str]):
         if paths_:
@@ -138,6 +144,24 @@ class MoviePipelinePanel(QWidget):
         self.summary = label("No movie loaded yet — click “New movie…” to describe one.",
                              dim=True)
         outer.addWidget(self.summary)
+
+        # Persistent (not just a 5s toast) record of the last script-breakdown
+        # attempt - a failure here (bad JSON, provider declined the brief,
+        # network error) used to be visible only as a transient toast, easy
+        # to miss, after which the panel just sat there with 0 scenes and no
+        # visible explanation.
+        self.script_status = label("", dim=True)
+        self.script_status.setWordWrap(True)
+        outer.addWidget(self.script_status)
+
+        self.retry_script_btn = QPushButton("🔄 Retry script breakdown")
+        self.retry_script_btn.setToolTip(
+            "Re-sends the same brief to the script model. Useful if the last attempt failed "
+            "or the AI declined to break it down.")
+        self.retry_script_btn.clicked.connect(self._retry_script)
+        self.retry_script_btn.setVisible(False)
+        outer.addWidget(self.retry_script_btn)
+        self._script_running = False
 
         stage_row = QHBoxLayout()
         self.images_btn = accent_button("🖼 Generate all scene images")
@@ -176,20 +200,59 @@ class MoviePipelinePanel(QWidget):
             self.load_combo.addItem(p.stem, str(p))
         self.load_combo.blockSignals(False)
 
+    def load_pipeline_by_id(self, pipeline_id: str) -> bool:
+        """Loads and shows a saved pipeline by id - e.g. for a timeline
+        clip's "Regenerate this scene" action reaching a movie that isn't
+        the one currently open in this panel. Returns whether it succeeded."""
+        path = paths.pipelines_dir() / f"{pipeline_id}.json"
+        if not path.exists():
+            self.status.emit("Couldn't find that movie's saved pipeline file.")
+            return False
+        try:
+            pipeline = MoviePipeline.load(path)
+        except Exception as exc:  # noqa: BLE001
+            self.status.emit(f"Couldn't load that movie: {exc}")
+            return False
+        self._set_pipeline(pipeline)
+        self._refresh_load_combo()
+        return True
+
     def _load_selected(self, idx: int):
         path = self.load_combo.itemData(idx)
         if path:
             self._set_pipeline(MoviePipeline.load(path))
 
     def _new_pipeline(self):
-        dlg = NewPipelineDialog(self.registry, self.settings, self.win)
+        dlg = NewPipelineDialog(self.registry, self.settings, self.win.jobs, self.win.get_adapter,
+                                self.win)
         if dlg.exec() and dlg.pipeline:
             dlg.pipeline.save()
             self._refresh_load_combo()
             self._set_pipeline(dlg.pipeline)
-            self.status.emit(f"Writing scene breakdown for “{dlg.pipeline.name}”…")
-            self.run.generate_breakdown(
-                on_fail=lambda msg: self.status.emit(f"Script breakdown failed: {msg}"))
+            self._run_script_breakdown()
+
+    def _retry_script(self):
+        self._run_script_breakdown()
+
+    def _run_script_breakdown(self):
+        if not self.run or self._script_running:
+            return
+        self._script_running = True
+        self.retry_script_btn.setEnabled(False)
+        self._set_script_status(f"Writing scene breakdown for “{self.run.pipeline.name}”…")
+
+        def done(_scenes):
+            self._script_running = False
+            self.retry_script_btn.setEnabled(True)
+            self._sync_buttons()
+
+        def fail(msg):
+            self._script_running = False
+            self.retry_script_btn.setEnabled(True)
+            self._set_script_status(msg, is_error=True)
+            self._sync_buttons()
+
+        self.run.generate_breakdown(on_done=done, on_fail=fail)
 
     def _set_pipeline(self, pipeline: MoviePipeline):
         if self.run:
@@ -208,6 +271,11 @@ class MoviePipelinePanel(QWidget):
 
     def _on_status(self, _status: str):
         self._sync_buttons()
+
+    def _set_script_status(self, text: str, is_error: bool = False) -> None:
+        from .. import theme
+        self.script_status.setText(text)
+        self.script_status.setStyleSheet(f"color:{theme.DANGER};" if is_error else "")
 
     def _on_scene_list_maybe_changed(self, _scene_id: str):
         # A scene's first asset landing can be the moment scenes go from "not
@@ -228,8 +296,18 @@ class MoviePipelinePanel(QWidget):
         for scene in sorted(self.run.pipeline.scenes, key=lambda s: s.index):
             row = SceneRow(self.run, scene)
             row.jobsRequested.connect(self.jobsRequested)
+            row.jumpRequested.connect(self._jump_to_scene)
             self._rows[scene.id] = row
             self.list_lay.insertWidget(self.list_lay.count() - 1, row)
+
+    def _jump_to_scene(self, scene_id: str):
+        if not self.run:
+            return
+        clip_id = self.run.scene_current_clip_id(scene_id)
+        if not clip_id or not self.win.timeline.reveal_clip(clip_id):
+            self.status.emit("This scene hasn't been placed on the timeline yet.")
+            return
+        self.win.tabs.setCurrentIndex(0)   # Edit tab, where the timeline lives
 
     def _sync_buttons(self):
         has_run = self.run is not None
@@ -242,10 +320,25 @@ class MoviePipelinePanel(QWidget):
         self.images_btn.setEnabled(bool(p and p.scenes) and not busy)
         self.video_btn.setEnabled(bool(p and p.scenes and any(s.image.active for s in p.scenes))
                                   and not busy)
+        needs_script = bool(p and not p.scenes)
+        self.retry_script_btn.setVisible(needs_script)
+        self.retry_script_btn.setEnabled(needs_script and not self._script_running)
+        if needs_script and not self._script_running and not self.script_status.text():
+            # A freshly-loaded saved pipeline that never got a working
+            # breakdown - give the retry button a reason to exist rather
+            # than leaving it unexplained.
+            self._set_script_status("No scenes yet - the script breakdown hasn't run "
+                                    "(or didn't finish) for this movie.")
+        elif not needs_script:
+            self.script_status.setText("")
 
     # ---------------------------------------------------------------- gates
     def _run_images(self):
         if not self.run:
+            return
+        if not self.run.pipeline.scenes:
+            self.status.emit("No scenes to generate images for yet - the script breakdown "
+                             "hasn't produced any scenes.")
             return
         n = sum(1 for s in self.run.pipeline.scenes if s.image.active is None)
         if n == 0:
@@ -262,6 +355,10 @@ class MoviePipelinePanel(QWidget):
 
     def _run_video(self):
         if not self.run:
+            return
+        if not self.run.pipeline.scenes:
+            self.status.emit("No scenes to generate video for yet - the script breakdown "
+                             "hasn't produced any scenes.")
             return
         n = sum(1 for s in self.run.pipeline.scenes if s.video.active is None)
         if n == 0:

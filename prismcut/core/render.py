@@ -24,7 +24,8 @@ class RenderOptions:
     width: int = 1920
     height: int = 1080
     fps: int = 30
-    fmt: str = "mp4"          # mp4 | mp4-hevc | webm | gif | png-seq | mp3 | wav
+    fmt: str = "mp4"          # mp4 | mp4-hevc | mov | mov-prores | mkv | webm | gif | png-seq
+                              # | mp3 | wav | flac | m4a
     crf: int = 20
     out_path: str = "output.mp4"
     extra: dict = field(default_factory=dict)
@@ -89,7 +90,7 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
     ff = media_utils.ffmpeg_path() or "ffmpeg"
     w, h, fps = opts.width, opts.height, opts.fps
     total = max(project.duration(), 0.1)
-    audio_only = opts.fmt in ("mp3", "wav")
+    audio_only = opts.fmt in ("mp3", "wav", "flac", "m4a")
 
     solo_tracks = [t.id for t in project.tracks if t.solo]
 
@@ -180,12 +181,19 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
     cmd += maps
 
     fmt = opts.fmt
-    if fmt == "mp4":
+    if fmt in ("mp4", "mov", "mkv"):
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", str(opts.crf),
-                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+                "-c:a", "aac", "-b:a", "192k"]
+        if fmt in ("mp4", "mov"):   # +faststart (moov-atom relocation) needs an isobmff container
+            cmd += ["-movflags", "+faststart"]
     elif fmt == "mp4-hevc":
         cmd += ["-c:v", "libx265", "-preset", "medium", "-crf", str(opts.crf + 4),
                 "-tag:v", "hvc1", "-c:a", "aac", "-b:a", "192k"]
+    elif fmt == "mov-prores":
+        # ProRes 422 (profile 3) + uncompressed PCM audio - the conventional
+        # pairing for a professional mastering/archival deliverable, not
+        # meant for direct web delivery. CRF doesn't apply to ProRes.
+        cmd += ["-c:v", "prores_ks", "-profile:v", "3", "-c:a", "pcm_s16le"]
     elif fmt == "webm":
         cmd += ["-c:v", "libvpx-vp9", "-crf", str(opts.crf + 12), "-b:v", "0",
                 "-c:a", "libopus", "-b:a", "160k"]
@@ -199,6 +207,10 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
         cmd += ["-c:a", "libmp3lame", "-b:a", "256k"]
     elif fmt == "wav":
         cmd += ["-c:a", "pcm_s16le"]
+    elif fmt == "flac":
+        cmd += ["-c:a", "flac"]
+    elif fmt == "m4a":
+        cmd += ["-c:a", "aac", "-b:a", "256k"]
     cmd += ["-t", _esc(total), str(opts.out_path)]
     return cmd
 

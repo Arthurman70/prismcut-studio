@@ -125,7 +125,7 @@ class Project:
 
     # ------------------------------------------------------------------ clips
     def add_clip(self, media_id: str, track_id: str, start: float,
-                 duration: Optional[float] = None) -> Optional[Clip]:
+                 duration: Optional[float] = None, label: str = "") -> Optional[Clip]:
         item = self.media.get(media_id)
         track = self.track(track_id)
         if not item or not track:
@@ -133,7 +133,7 @@ class Project:
         if duration is None:
             duration = item.duration if item.duration > 0 else 5.0
         clip = Clip(id=_uid(), media_id=media_id, track_id=track_id,
-                    start=max(0.0, start), duration=max(0.2, duration), label=item.label)
+                    start=max(0.0, start), duration=max(0.2, duration), label=label or item.label)
         self.clips[clip.id] = clip
         self.dirty = True
         return clip

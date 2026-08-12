@@ -179,7 +179,8 @@
 
     { "id": "claude-sonnet-5", "provider": "anthropic", "label": "Claude Sonnet 5", "caps": ["chat"] },
     { "id": "claude-fable-5", "provider": "anthropic", "label": "Claude Fable 5", "caps": ["chat"] },
-    { "id": "claude-opus-4-8", "provider": "anthropic", "label": "Claude Opus 4.8", "caps": ["chat"] },
+    { "id": "claude-opus-5", "provider": "anthropic", "label": "Claude Opus 5", "caps": ["chat"] },
+    { "id": "claude-haiku-4-5-20251001", "provider": "anthropic", "label": "Claude Haiku 4.5", "caps": ["chat"] },
 
     { "id": "grok-4.5", "provider": "xai", "label": "Grok 4.5", "caps": ["chat"] },
     { "id": "grok-imagine-image-quality", "provider": "xai", "label": "Grok Imagine (image)", "caps": ["image_generate"],
@@ -207,7 +208,7 @@
         { "name": "duration", "label": "Duration (s)", "type": "choice", "choices": ["6", "10"], "default": "6" },
         { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["512P", "768P", "1080P"], "default": "768P" }
       ] },
-    { "id": "music-1.5", "provider": "minimax", "label": "MiniMax Music 1.5", "caps": ["music"],
+    { "id": "music-3.0", "provider": "minimax", "label": "MiniMax Music 3.0", "caps": ["music"],
       "params": [ { "name": "lyrics", "label": "Lyrics (blank = instrumental)", "type": "text", "default": "" } ] },
     { "id": "speech-02-hd", "provider": "minimax", "label": "MiniMax Speech 02 HD", "caps": ["tts"],
       "params": [ { "name": "voice", "label": "Voice id", "type": "choice", "choices": ["Wise_Woman", "Friendly_Person", "Deep_Voice_Man", "Calm_Woman", "Casual_Guy", "Lively_Girl", "Patient_Man", "Young_Knight"], "default": "Wise_Woman" } ] },

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QSettings
@@ -29,7 +30,17 @@ class Settings:
     get(key, default), set(key, value), get_key(provider, env), set_key(provider, value)."""
 
     def __init__(self):
-        self.q = QSettings("PrismCut", "PrismCutStudio")
+        # PRISMCUT_DATA_DIR (same override core.paths already honors) sandboxes
+        # this to a per-process ini file instead of the real OS registry -
+        # without it, tests silently read/write the developer's actual
+        # PrismCut settings (remembered model defaults, etc.), which is both
+        # a real-usage-pollutes-tests correctness bug and, conversely, a way
+        # a test run could clobber someone's real saved preferences.
+        override = os.environ.get("PRISMCUT_DATA_DIR")
+        if override:
+            self.q = QSettings(str(Path(override) / "settings.ini"), QSettings.Format.IniFormat)
+        else:
+            self.q = QSettings("PrismCut", "PrismCutStudio")
 
     # ------------------------------------------------------------- generic
     def get(self, key: str, default=None):
