@@ -219,6 +219,12 @@ class TimelineView(QGraphicsView):
         menu.exec(ev.globalPos())
 
 
+MARKER_COLORS = [
+    ("Amber", "#e8a33d"), ("Red", "#ef5350"), ("Green", "#66bb6a"),
+    ("Blue", "#42a5f5"), ("Purple", "#ab47bc"),
+]
+
+
 class Ruler(QWidget):
     def __init__(self, timeline: "TimelineWidget"):
         super().__init__()
@@ -242,17 +248,41 @@ class Ruler(QWidget):
             p.drawLine(x, 14, x, 24)
             p.drawText(x + 3, 11, _fmt(float(t)))
             t += step
+        # marker flags - small downward triangles on the baseline, drawn
+        # before the playhead so the playhead line stays on top at t=0
+        for m in self.timeline.project.markers:
+            x = m.time * pps - offset
+            if -8 <= x <= self.width() + 8:
+                self._paint_marker(p, x, m.color, m.label)
         # playhead marker
         x = int(self.timeline.playhead_time * pps - offset)
         p.setPen(QPen(QColor(theme.ORANGE), 2))
         p.drawLine(x, 0, x, 24)
+
+    def _paint_marker(self, p: QPainter, x: float, color: str, label: str):
+        col = QColor(color)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(col))
+        p.drawPolygon([QPointF(x - 5, 0), QPointF(x + 5, 0), QPointF(x, 7)])
+        if label:
+            p.setPen(QColor(theme.TEXT))
+            p.drawText(int(x) + 7, 11, label)
 
     def _scrub(self, ev):
         offset = self.timeline.view.horizontalScrollBar().value()
         t = (ev.position().x() + offset) / self.timeline.pps
         self.timeline.set_playhead(max(0.0, t))
 
+    def _time_at(self, ev) -> float:
+        # QContextMenuEvent (unlike QMouseEvent) has no position()/QPointF
+        # API in Qt6 - only the older pos()/QPoint one, hence this is a
+        # separate helper from _scrub() rather than a shared one.
+        offset = self.timeline.view.horizontalScrollBar().value()
+        return max(0.0, (ev.pos().x() + offset) / self.timeline.pps)
+
     def mousePressEvent(self, ev):
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
         self._drag = True
         self._scrub(ev)
 
@@ -262,6 +292,30 @@ class Ruler(QWidget):
 
     def mouseReleaseEvent(self, _ev):
         self._drag = False
+
+    def contextMenuEvent(self, ev):
+        t = self._time_at(ev)
+        marker = self.timeline.project.marker_near(t, tolerance=8.0 / self.timeline.pps)
+        menu = QMenu(self)
+        if marker:
+            menu.addAction("✏ Rename marker", lambda: self._rename(marker.id))
+            color_menu = menu.addMenu("🎨 Color")
+            for name, hexval in MARKER_COLORS:
+                color_menu.addAction(name, lambda h=hexval: self.timeline.recolor_marker(marker.id, h))
+            menu.addSeparator()
+            menu.addAction("🗑 Delete marker", lambda: self.timeline.remove_marker(marker.id))
+        else:
+            menu.addAction(f"➕ Add marker here ({_fmt(t)})", lambda: self.timeline.add_marker_at(t))
+        menu.exec(ev.globalPos())
+
+    def _rename(self, marker_id: str):
+        marker = next((m for m in self.timeline.project.markers if m.id == marker_id), None)
+        if not marker:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(self, "Rename marker", "Label:", text=marker.label)
+        if ok:
+            self.timeline.rename_marker(marker_id, text)
 
 
 class TrackHeader(QWidget):
@@ -460,6 +514,7 @@ class TimelineWidget(QWidget):
         pts = [0.0, self.playhead_time]
         for c in self.project.clips.values():
             pts += [c.start, c.end]
+        pts += [m.time for m in self.project.markers]
         return pts
 
     def snap_time(self, t: float) -> float:
@@ -618,6 +673,8 @@ class TimelineWidget(QWidget):
             self.zoom_steps(1)
         elif ev.key() == Qt.Key.Key_Minus and ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.zoom_steps(-1)
+        elif ev.key() == Qt.Key.Key_M:
+            self.add_marker_at(self.playhead_time)
         else:
             super().keyPressEvent(ev)
 
@@ -627,6 +684,68 @@ class TimelineWidget(QWidget):
         else:
             self.project.add_track(kind)
             self.refresh(True)
+
+    def add_marker_at(self, time: float, label: str = "") -> None:
+        marker = self.project.add_marker(time, label)
+
+        def insert(m=marker):
+            if m not in self.project.markers:
+                self.project.markers.append(m)
+                self.project.markers.sort(key=lambda mk: mk.time)
+
+        def remove(m=marker):
+            self.project.markers = [mk for mk in self.project.markers if mk.id != m.id]
+
+        def refresh():
+            self.project.dirty = True
+            self.ruler.update()
+
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            "Add marker", add=True, insert=insert, remove=remove, refresh=refresh))
+
+    def remove_marker(self, marker_id: str) -> None:
+        marker = next((m for m in self.project.markers if m.id == marker_id), None)
+        if not marker:
+            return
+
+        def insert(m=marker):
+            if m not in self.project.markers:
+                self.project.markers.append(m)
+                self.project.markers.sort(key=lambda mk: mk.time)
+
+        def remove(m=marker):
+            self.project.markers = [mk for mk in self.project.markers if mk.id != m.id]
+
+        def refresh():
+            self.project.dirty = True
+            self.ruler.update()
+
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            "Delete marker", add=False, insert=insert, remove=remove, refresh=refresh))
+
+    def rename_marker(self, marker_id: str, new_label: str) -> None:
+        marker = next((m for m in self.project.markers if m.id == marker_id), None)
+        if not marker:
+            return
+        before, after = {"label": marker.label}, {"label": new_label}
+
+        def refresh():
+            self.project.dirty = True
+            self.ruler.update()
+
+        self.undo_stack.push(ChangePropertiesCommand("Rename marker", marker, before, after, refresh))
+
+    def recolor_marker(self, marker_id: str, new_color: str) -> None:
+        marker = next((m for m in self.project.markers if m.id == marker_id), None)
+        if not marker:
+            return
+        before, after = {"color": marker.color}, {"color": new_color}
+
+        def refresh():
+            self.project.dirty = True
+            self.ruler.update()
+
+        self.undo_stack.push(ChangePropertiesCommand("Recolor marker", marker, before, after, refresh))
 
     def add_media_at_playhead(self, media_id: str, track_id: str = "",
                               start: float | None = None, duration: float | None = None,

@@ -264,3 +264,72 @@ def test_split_and_resolve(tmp_path):
     assert abs(right.in_point - 2.0) < 1e-6
     found, media, off = p.resolve_at(3.0)
     assert found is right and abs(off - 3.0) < 1e-6
+
+
+def test_no_markers_leaves_command_unaffected(tmp_path):
+    """The overwhelmingly common case (no markers used) must produce a
+    byte-identical command to before chapters existed - no stray input, no
+    filesystem write, no -map_chapters."""
+    p = make_project(tmp_path)
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+    cmd = build_command(p, opts)
+    assert "-map_chapters" not in cmd
+    assert "ffmetadata" not in " ".join(cmd)
+
+
+def test_markers_produce_chapters_ffmetadata_input(monkeypatch, tmp_path):
+    from prismcut.core import render as render_mod
+    monkeypatch.setattr(render_mod.paths, "cache_dir", lambda: tmp_path)
+    p = make_project(tmp_path)
+    p.add_marker(0.0, "Intro")
+    p.add_marker(2.0, "Main")
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+
+    assert "-map_chapters" in cmd
+    assert "ffmetadata" in cmd
+    chapters_path = Path(_arg_after(cmd, "-i", occurrence=cmd.count("-i") - 1))
+    text = chapters_path.read_text(encoding="utf-8")
+    assert text.startswith(";FFMETADATA1")
+    assert "title=Intro" in text
+    assert "title=Main" in text
+    assert "START=0" in text
+    assert "START=2000" in text
+
+
+def test_marker_at_or_past_project_end_is_skipped(monkeypatch, tmp_path):
+    from prismcut.core import render as render_mod
+    monkeypatch.setattr(render_mod.paths, "cache_dir", lambda: tmp_path)
+    p = make_project(tmp_path)
+    p.add_marker(999.0, "past the end")
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+
+    assert "-map_chapters" not in cmd
+
+
+def test_chapters_skipped_for_webm_and_audio_formats(monkeypatch, tmp_path):
+    from prismcut.core import render as render_mod
+    monkeypatch.setattr(render_mod.paths, "cache_dir", lambda: tmp_path)
+    p = make_project(tmp_path)
+    p.add_marker(0.0, "Intro")
+
+    for fmt, out in (("webm", "out.webm"), ("mp3", "out.mp3")):
+        opts = RenderOptions(fmt=fmt, out_path=str(tmp_path / out))
+        cmd = build_command(p, opts)
+        assert "-map_chapters" not in cmd
+
+
+def test_unlabeled_marker_gets_a_default_chapter_title(monkeypatch, tmp_path):
+    from prismcut.core import render as render_mod
+    monkeypatch.setattr(render_mod.paths, "cache_dir", lambda: tmp_path)
+    p = make_project(tmp_path)
+    p.add_marker(0.0)
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+
+    chapters_path = Path(_arg_after(cmd, "-i", occurrence=cmd.count("-i") - 1))
+    assert "title=Chapter 1" in chapters_path.read_text(encoding="utf-8")

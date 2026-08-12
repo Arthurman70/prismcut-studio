@@ -43,6 +43,14 @@ class Track:
 
 
 @dataclass
+class Marker:
+    id: str
+    time: float
+    label: str = ""
+    color: str = "#e8a33d"
+
+
+@dataclass
 class Clip:
     id: str
     media_id: str
@@ -83,6 +91,7 @@ class Project:
             Track(_uid(), "audio", "A2"),
         ]
         self.clips: dict[str, Clip] = {}
+        self.markers: list[Marker] = []
         self.dirty = False
 
     # ------------------------------------------------------------------ media
@@ -226,6 +235,24 @@ class Project:
         clip.strip_audio = True
         return audio_clip
 
+    # ---------------------------------------------------------------- markers
+    def add_marker(self, time: float, label: str = "", color: str = "#e8a33d") -> Marker:
+        m = Marker(id=_uid(), time=max(0.0, time), label=label, color=color)
+        self.markers.append(m)
+        self.markers.sort(key=lambda mk: mk.time)
+        self.dirty = True
+        return m
+
+    def remove_marker(self, marker_id: str) -> None:
+        self.markers = [m for m in self.markers if m.id != marker_id]
+        self.dirty = True
+
+    def marker_near(self, time: float, tolerance: float = 0.4) -> Optional[Marker]:
+        """Closest marker within `tolerance` seconds of `time`, or None -
+        shared by snap-to-marker and ruler right-click/click hit-testing."""
+        candidates = [m for m in self.markers if abs(m.time - time) <= tolerance]
+        return min(candidates, key=lambda m: abs(m.time - time)) if candidates else None
+
     # ------------------------------------------------------------------ io
     def to_dict(self) -> dict:
         return {
@@ -234,6 +261,7 @@ class Project:
             "media": [asdict(m) for m in self.media.values()],
             "tracks": [asdict(t) for t in self.tracks],
             "clips": [asdict(c) for c in self.clips.values()],
+            "markers": [asdict(mk) for mk in self.markers],
         }
 
     def save(self, path=None) -> Path:
@@ -257,5 +285,6 @@ class Project:
         proj.media = {m["id"]: MediaItem(**m) for m in data.get("media", [])}
         proj.tracks = [Track(**t) for t in data.get("tracks", [])] or proj.tracks
         proj.clips = {c["id"]: Clip(**c) for c in data.get("clips", [])}
+        proj.markers = [Marker(**mk) for mk in data.get("markers", [])]
         proj.dirty = False
         return proj

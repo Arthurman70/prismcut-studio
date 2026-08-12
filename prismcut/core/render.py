@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Optional
 
 from . import media as media_utils
+from . import paths
 from .project import Clip, Project
+
+# Containers ffmpeg can embed chapter markers in via an ffmetadata sidecar
+# input - excludes webm (muxer support is inconsistent), gif/png-seq (no
+# chapter concept) and the audio-only formats.
+_CHAPTER_CAPABLE_FORMATS = {"mp4", "mp4-hevc", "mov", "mov-prores", "mkv"}
 
 
 @dataclass
@@ -60,6 +66,31 @@ def _atempo_chain(speed: float) -> list[str]:
     first = 2.0 if speed > 2.0 else 0.5
     second = speed / first
     return [f"atempo={first:.4f}", f"atempo={second:.4f}"]
+
+
+def _write_chapters_file(project: Project, total: float) -> Optional[Path]:
+    """Writes an ffmpeg ffmetadata sidecar describing project.markers as
+    chapters (each running from its marker to the next marker, or to the
+    end of the timeline for the last one) and returns its path, or None
+    (writing nothing) if there are no markers before the end of the
+    timeline - the overwhelmingly common case, so most renders skip this
+    mechanism entirely and their ffmpeg command is unaffected by it."""
+    marks = [m for m in project.markers if m.time < total]
+    if not marks:
+        return None
+    lines = [";FFMETADATA1"]
+    for i, m in enumerate(marks):
+        end = marks[i + 1].time if i + 1 < len(marks) else total
+        if end <= m.time:
+            continue
+        title = (m.label or f"Chapter {i + 1}").replace("\n", " ")
+        lines += ["[CHAPTER]", "TIMEBASE=1/1000",
+                  f"START={int(m.time * 1000)}", f"END={int(end * 1000)}", f"title={title}"]
+    if len(lines) == 1:
+        return None
+    path = paths.cache_dir() / "chapters.ffmeta"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def _clip_video_filters(c: Clip, w: int, h: int) -> str:
@@ -169,6 +200,14 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
             alabels.append(al)
             idx += 1
 
+    chapters_idx: Optional[int] = None
+    if opts.fmt in _CHAPTER_CAPABLE_FORMATS and project.markers:
+        chapters_path = _write_chapters_file(project, total)
+        if chapters_path is not None:
+            inputs.append(["-f", "ffmetadata", "-i", str(chapters_path)])
+            chapters_idx = idx
+            idx += 1
+
     filters: list[str] = []
     maps: list[str] = []
 
@@ -210,6 +249,8 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
         pass
     cmd += ["-filter_complex", ";".join(filters)] if filters else []
     cmd += maps
+    if chapters_idx is not None:
+        cmd += ["-map_chapters", str(chapters_idx)]
 
     fmt = opts.fmt
     if fmt in ("mp4", "mov", "mkv"):

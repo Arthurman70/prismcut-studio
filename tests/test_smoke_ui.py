@@ -1537,6 +1537,112 @@ def test_track_header_mute_toggle_is_undoable(win):
     assert track.mute is False
 
 
+def test_timeline_marker_keyboard_shortcut_adds_marker_and_is_undoable(win):
+    """"M" adds a marker at the playhead, mirroring how the razor tool binds
+    "R" - and like every other timeline mutation, it must be undoable."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeyEvent
+
+    win.timeline.set_playhead(3.0)
+    before = len(win.project.markers)
+
+    ev = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_M, Qt.KeyboardModifier.NoModifier)
+    win.timeline.keyPressEvent(ev)
+
+    assert len(win.project.markers) == before + 1
+    marker = win.project.markers[-1]
+    assert marker.time == 3.0
+
+    win.undo_stack.undo()
+    assert len(win.project.markers) == before
+
+    win.undo_stack.redo()
+    assert len(win.project.markers) == before + 1
+
+    win.undo_stack.undo()   # leave shared win.project state clean for later tests
+    assert len(win.project.markers) == before
+
+
+def test_timeline_remove_marker_is_undoable(win):
+    # Added directly (not through the undo stack) so this test only has to
+    # verify remove_marker() itself is undoable, same spirit as the
+    # add-directly-then-mutate-through-timeline setup used for rename/recolor
+    # below.
+    marker = win.project.add_marker(5.0, "temp")
+
+    win.timeline.remove_marker(marker.id)
+    assert marker not in win.project.markers
+    assert win.undo_stack.canUndo()
+
+    win.undo_stack.undo()
+    assert marker in win.project.markers
+
+    win.undo_stack.redo()   # back to removed - matches the pre-test baseline
+    assert marker not in win.project.markers
+
+
+def test_timeline_rename_marker_is_undoable(win):
+    marker = win.project.add_marker(5.0, "old label")
+    try:
+        win.timeline.rename_marker(marker.id, "new label")
+        assert marker.label == "new label"
+
+        win.undo_stack.undo()
+        assert marker.label == "old label"
+
+        win.undo_stack.redo()
+        assert marker.label == "new label"
+    finally:
+        win.project.remove_marker(marker.id)   # leave shared win.project state clean
+
+
+def test_timeline_recolor_marker_is_undoable(win):
+    marker = win.project.add_marker(5.0, color="#e8a33d")
+    try:
+        win.timeline.recolor_marker(marker.id, "#42a5f5")
+        assert marker.color == "#42a5f5"
+
+        win.undo_stack.undo()
+        assert marker.color == "#e8a33d"
+    finally:
+        win.project.remove_marker(marker.id)   # leave shared win.project state clean
+
+
+def test_timeline_remove_marker_unknown_id_is_a_noop(win):
+    before = list(win.project.markers)
+    win.timeline.remove_marker("does-not-exist")
+    assert win.project.markers == before
+
+
+def test_ruler_time_at_reads_context_menu_event_position(win):
+    """QContextMenuEvent (unlike QMouseEvent) only exposes pos()/QPoint in
+    Qt6, not position()/QPointF - calling the wrong one raises
+    AttributeError the instant a user right-clicks the ruler. Exercises the
+    real event class (menu.exec() itself is not exercised here since it's
+    a blocking modal call under a real Qt event loop, same reason no other
+    contextMenuEvent in this codebase is smoke-tested end-to-end)."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QContextMenuEvent
+
+    win.timeline.pps = 26.0
+    win.timeline.view.horizontalScrollBar().setValue(0)
+    ev = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(130, 10), QPoint(130, 10))
+
+    assert win.timeline.ruler._time_at(ev) == pytest.approx(5.0)
+
+
+def test_timeline_snap_time_snaps_to_marker(win):
+    """_snap_points() was extended to include marker positions, closing the
+    existing gap where dragging/trimming clips could never align to a
+    marker the way it already could to another clip's edge or the
+    playhead."""
+    marker = win.project.add_marker(7.0, "snap target")
+    try:
+        assert win.timeline.snap_time(7.2) == 7.0
+    finally:
+        win.project.remove_marker(marker.id)
+
+
 def test_timeline_reveal_clip_seeks_scrolls_and_selects(win):
     img = win.project.add_media(__file__)
     img.kind = "image"

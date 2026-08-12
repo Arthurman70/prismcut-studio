@@ -112,3 +112,71 @@ def test_resolve_audio_at_skips_muted_clips_and_tracks(tmp_path):
     clip.muted = False
     a1.mute = True
     assert p.resolve_audio_at(1.0) == (None, None, 0.0)
+
+
+def test_add_marker_keeps_markers_sorted_by_time():
+    p = Project()
+    p.add_marker(5.0, "third")
+    p.add_marker(1.0, "first")
+    p.add_marker(3.0, "second")
+
+    assert [m.label for m in p.markers] == ["first", "second", "third"]
+    assert p.dirty is True
+
+
+def test_add_marker_clamps_negative_time_to_zero():
+    p = Project()
+    m = p.add_marker(-2.0)
+
+    assert m.time == 0.0
+
+
+def test_remove_marker():
+    p = Project()
+    m = p.add_marker(2.0, "cut here")
+
+    p.remove_marker(m.id)
+
+    assert p.markers == []
+
+
+def test_remove_marker_missing_id_is_a_noop():
+    p = Project()
+    p.add_marker(2.0)
+
+    p.remove_marker("does-not-exist")
+
+    assert len(p.markers) == 1
+
+
+def test_marker_near_finds_closest_within_tolerance():
+    p = Project()
+    far = p.add_marker(1.0)
+    near = p.add_marker(9.9)
+    p.add_marker(20.0)
+
+    found = p.marker_near(10.0, tolerance=0.4)
+
+    assert found is near
+    assert found is not far
+
+
+def test_marker_near_returns_none_outside_tolerance():
+    p = Project()
+    p.add_marker(1.0)
+
+    assert p.marker_near(10.0, tolerance=0.4) is None
+
+
+def test_project_save_load_round_trips_markers(tmp_path):
+    p = Project()
+    p.add_marker(2.5, "intro ends", color="#42a5f5")
+    path = tmp_path / "proj.pcut"
+
+    p.save(path)
+    loaded = Project.load(path)
+
+    assert len(loaded.markers) == 1
+    assert loaded.markers[0].time == 2.5
+    assert loaded.markers[0].label == "intro ends"
+    assert loaded.markers[0].color == "#42a5f5"
