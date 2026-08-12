@@ -90,9 +90,13 @@ variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`,
 
 ## Windows .exe
 
-**Download:** grab `PrismCut-windows-x64.zip` from
-[Releases](../../releases) (built automatically by GitHub Actions on every
-tag — no toolchain needed).
+**Download:** grab `PrismCut-Studio-Setup-<version>.exe` from
+[Releases](../../releases) for a proper installer — Start Menu shortcut,
+optional desktop icon, and a clean uninstall via *Apps & Features*. It
+installs per-user, so no admin rights or UAC prompt are needed. A portable
+`PrismCut-windows-x64.zip` (just unzip and run) is attached to the same
+release for anyone who'd rather not install anything. Both are built
+automatically by GitHub Actions on every tag — no toolchain needed.
 
 **Build it yourself** on Windows (one command):
 
@@ -100,8 +104,15 @@ tag — no toolchain needed).
 packaging\build_windows.bat
 ```
 
-→ `dist\PrismCut\PrismCut.exe`. Or trigger the *Build Windows EXE* workflow
-from the Actions tab and download the artifact.
+→ `dist\PrismCut\PrismCut.exe`. To also build the installer, grab
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) (free) and run:
+
+```bat
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
+```
+
+→ `dist\installer\PrismCut-Studio-Setup-<version>.exe`. Or trigger the
+*Build Windows EXE* workflow from the Actions tab and download the artifact.
 
 ---
 

@@ -22,7 +22,7 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-icon_path = os.path.join(os.path.dirname("__file__"), "packaging", "icon.ico")
+icon_path = os.path.join(SPECPATH, "icon.ico")
 exe = EXE(
     pyz,
     a.scripts,

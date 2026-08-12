@@ -1,0 +1,61 @@
+; Inno Setup script - builds a real Windows installer (Setup.exe) around the
+; PyInstaller output. Run packaging\build_windows.bat first (or the PyInstaller
+; step of it) so dist\PrismCut\PrismCut.exe exists, then:
+;     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
+; CI can override the version without editing this file:
+;     ISCC.exe /DMyAppVersion=1.2.3 packaging\installer.iss
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
+#define MyAppName "PrismCut Studio"
+#define MyAppPublisher "PrismCut Studio contributors"
+#define MyAppURL "https://github.com/Arthurman70/prismcut-studio"
+#define MyAppExeName "PrismCut.exe"
+
+[Setup]
+; Keep this GUID stable across releases - it's how Windows recognizes
+; upgrades vs. fresh installs (regenerating it would orphan old installs).
+AppId={{BC2968F4-DE79-4830-898D-0813B11BA474}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}/issues
+AppUpdatesURL={#MyAppURL}/releases
+; Per-user install, no admin/UAC prompt required (same pattern as VS Code's
+; "User Installer" and most modern desktop-app installers).
+PrivilegesRequired=lowest
+DefaultDirName={localappdata}\Programs\PrismCut Studio
+DefaultGroupName=PrismCut Studio
+DisableProgramGroupPage=yes
+LicenseFile=..\LICENSE
+OutputDir=..\dist\installer
+OutputBaseFilename=PrismCut-Studio-Setup-{#MyAppVersion}
+SetupIconFile=icon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
+Compression=lzma2/max
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+; Fails loudly at compile time instead of shipping an installer with no payload.
+#if !FileExists("..\dist\PrismCut\" + MyAppExeName)
+  #error "dist\PrismCut\PrismCut.exe not found - run the PyInstaller build first (packaging\build_windows.bat)"
+#endif
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+[Files]
+Source: "..\dist\PrismCut\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+
+[Icons]
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent

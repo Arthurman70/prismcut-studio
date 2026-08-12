@@ -29,14 +29,41 @@ jobs:
       - name: Zip build
         run: Compress-Archive -Path dist/PrismCut -DestinationPath PrismCut-windows-x64.zip
 
-      - name: Upload artifact
+      - name: Upload portable zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: PrismCut-windows-x64
           path: PrismCut-windows-x64.zip
 
+      - name: Determine installer version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $version = $env:GITHUB_REF -replace "^refs/tags/v", ""
+          } else {
+            $version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.ver.outputs.version }} packaging\installer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismCut-Studio-Setup
+          path: dist/installer/*.exe
+
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: PrismCut-windows-x64.zip
+          files: |
+            PrismCut-windows-x64.zip
+            dist/installer/*.exe

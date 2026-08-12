@@ -13,5 +13,9 @@ echo.
 echo ==================================================================
 echo  Done! Your app is in  dist\PrismCut\PrismCut.exe
 echo  (Ship the whole dist\PrismCut folder, or zip it.)
+echo.
+echo  For a proper Setup.exe installer, install Inno Setup 6
+echo  (https://jrsoftware.org/isinfo.php) then run:
+echo    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
 echo ==================================================================
 pause
