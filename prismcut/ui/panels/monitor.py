@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSlider,
                                QStackedLayout, QVBoxLayout, QWidget)
 
@@ -93,6 +93,40 @@ class MonitorBase(QWidget):
         self.stack.setCurrentWidget(self.image_label)
         if self.player:
             self.player.stop()
+
+    def show_title(self, meta: dict, canvas_height: int = 1080):
+        """Title clips have no real file to decode - a simple QPainter
+        render of the same text/size/color/position stands in for a live
+        ffmpeg preview here (render.py's drawtext is what actually produces
+        the exported frame; this is preview-only)."""
+        self._current_path = None
+        if self.player:
+            self.player.stop()
+        size = self.stack_host.size()
+        if size.width() < 2 or size.height() < 2:
+            size = self.image_label.size()
+        pix = QPixmap(size)
+        pix.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = QFont()
+        font.setBold(bool(meta.get("bold", True)))
+        px = max(8, int(size.height() * (float(meta.get("font_size", 64) or 64) / max(1, canvas_height))))
+        font.setPixelSize(px)
+        p.setFont(font)
+        text = str(meta.get("title_text", ""))
+        align = Qt.AlignmentFlag.AlignHCenter | {
+            "top": Qt.AlignmentFlag.AlignTop, "bottom": Qt.AlignmentFlag.AlignBottom,
+        }.get(meta.get("position", "center"), Qt.AlignmentFlag.AlignVCenter)
+        if meta.get("shadow", True):
+            p.setPen(QColor(0, 0, 0, 180))
+            p.drawText(pix.rect().translated(2, 2), int(align), text)
+        p.setPen(QColor(meta.get("color", "#ffffff")))
+        p.drawText(pix.rect(), int(align), text)
+        p.end()
+        self._pix = pix
+        self._update_pix()
+        self.stack.setCurrentWidget(self.image_label)
 
     def _update_pix(self):
         if self._pix and not self._pix.isNull():
@@ -245,6 +279,10 @@ class ProjectMonitor(MonitorBase):
         elif item.kind == "image":
             if self._preview_media_id != item.id:
                 self.show_image(item.path)
+                self._preview_media_id = item.id
+        elif item.kind == "title":
+            if self._preview_media_id != item.id:
+                self.show_title(item.meta, self.project.height)
                 self._preview_media_id = item.id
         else:
             if self._preview_media_id != item.id:

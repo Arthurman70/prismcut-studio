@@ -1939,4 +1939,95 @@ def test_export_dialog_format_switch_updates_output_extension(win):
             assert dlg.out_edit.text().endswith(ext), f"format row {idx} didn't update the extension"
     finally:
         dlg.close()
+
+
+# -------------------------------------------------------------------- titles
+
+def test_title_dialog_result_media_creates_title_item(win):
+    from prismcut.ui.dialogs.title_dialog import POSITIONS, TITLE_COLORS, TitleDialog
+
+    dlg = TitleDialog(win.project, win)
+    item = None
+    try:
+        dlg.text_edit.setText("Chapter One")
+        dlg.size_spin.setValue(48)
+        dlg.color_combo.setCurrentIndex(2)      # Amber
+        dlg.position_combo.setCurrentIndex(1)   # Top
+        dlg.bold_check.setChecked(False)
+        dlg.shadow_check.setChecked(False)
+        dlg.duration_spin.setValue(8)
+
+        item = dlg.result_media()
+
+        assert item.kind == "title"
+        assert item.id in win.project.media
+        assert item.meta["title_text"] == "Chapter One"
+        assert item.meta["font_size"] == 48
+        assert item.meta["color"] == TITLE_COLORS[2][1]
+        assert item.meta["position"] == POSITIONS[1][1]
+        assert item.meta["bold"] is False
+        assert item.meta["shadow"] is False
+        assert item.duration == 8.0
+    finally:
+        if item:
+            win.project.media.pop(item.id, None)
+        dlg.close()
+
+
+def test_title_dialog_blank_text_falls_back_to_default_label(win):
+    from prismcut.ui.dialogs.title_dialog import TitleDialog
+
+    dlg = TitleDialog(win.project, win)
+    item = None
+    try:
+        item = dlg.result_media()   # text_edit left empty
+        assert item.label == "Title"
+        assert item.meta["title_text"] == "Title"
+    finally:
+        if item:
+            win.project.media.pop(item.id, None)
+        dlg.close()
+
+
+def test_project_bin_add_title_media_is_undoable(win):
+    item = win.project.add_title("Undo me")
+
+    win.bin.add_title_media(item)
+    assert win.undo_stack.canUndo()
+
+    win.undo_stack.undo()
+    assert item.id not in win.project.media
+
+    win.undo_stack.redo()
+    assert item.id in win.project.media
+
+
+def test_monitor_show_title_renders_without_crashing(win):
+    win.clip_monitor.show_title({
+        "title_text": "Preview", "font_size": 64, "color": "#ffffff",
+        "position": "center", "bold": True, "shadow": True,
+    }, canvas_height=1080)
+
+    assert win.clip_monitor.stack.currentWidget() is win.clip_monitor.image_label
+    assert win.clip_monitor._pix is not None and not win.clip_monitor._pix.isNull()
+
+
+def test_project_monitor_preview_at_title_clip(win):
+    # A far-away, deliberately weird start time - win.project is a shared,
+    # module-scoped fixture other tests leave clips on, and resolve_at()
+    # (which preview_at() is built on) would silently resolve to one of
+    # those instead of this test's own clip if the ranges overlapped.
+    start = 100_000.0
+    item = win.project.add_title("On Timeline", duration=3.0)
+    track = win.project.video_tracks()[0]   # topmost - guaranteed to win resolve_at()
+    clip = win.project.add_clip(item.id, track.id, start, 3.0)
+    try:
+        win.project_monitor.preview_at(start + 1.0)
+
+        assert win.project_monitor._preview_media_id == item.id
+        assert win.project_monitor.stack.currentWidget() is win.project_monitor.image_label
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.media.pop(item.id, None)
+        win.project_monitor.preview_at(0.0)   # reset shared monitor state for later tests
     assert callable(win._maybe_check_updates_on_startup)

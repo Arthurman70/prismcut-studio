@@ -270,3 +270,70 @@ def test_close_gap_after_returns_false_when_no_gap(tmp_path):
 
     assert p.close_gap_after(v1.id, 1.0) is False
     assert clip.start == 0.0
+
+
+def test_add_title_creates_synthetic_media_item():
+    p = Project()
+    item = p.add_title("Chapter One", font_size=48, color="#e8a33d",
+                        position="bottom", bold=False, shadow=False, duration=3.0)
+
+    assert item.kind == "title"
+    assert item.id in p.media
+    assert item.label == "Chapter One"
+    assert item.duration == 3.0
+    assert item.width == p.width and item.height == p.height
+    assert item.has_audio is False
+    assert item.group == "titles"
+    assert item.meta == {
+        "title_text": "Chapter One", "font_size": 48, "color": "#e8a33d",
+        "position": "bottom", "bold": False, "shadow": False,
+    }
+    assert p.dirty is True
+
+
+def test_add_title_defaults_and_label_fallback():
+    p = Project()
+    item = p.add_title("   ")   # blank/whitespace-only text
+
+    assert item.label == "Title"
+    assert item.meta["font_size"] == 64
+    assert item.meta["color"] == "#ffffff"
+    assert item.meta["position"] == "center"
+    assert item.meta["bold"] is True
+    assert item.meta["shadow"] is True
+    assert item.duration == 5.0
+
+
+def test_add_title_label_is_truncated_and_synthetic_path_is_unique():
+    p = Project()
+    long_text = "x" * 100
+    a = p.add_title(long_text)
+    b = p.add_title(long_text)
+
+    assert len(a.label) <= 40
+    assert a.path != b.path   # each title needs a distinct synthetic path
+
+
+def test_add_title_round_trips_through_save_load(tmp_path):
+    p = Project()
+    p.add_title("Intro", color="#42a5f5", position="top")
+    path = tmp_path / "proj.pcut"
+
+    p.save(path)
+    loaded = Project.load(path)
+
+    items = list(loaded.media.values())
+    assert len(items) == 1
+    assert items[0].kind == "title"
+    assert items[0].meta["title_text"] == "Intro"
+    assert items[0].meta["color"] == "#42a5f5"
+
+
+def test_add_title_clip_gets_default_duration_from_the_media_item(tmp_path):
+    p = Project()
+    item = p.add_title("Card", duration=7.0)
+    v1 = p.video_tracks()[-1]
+
+    clip = p.add_clip(item.id, v1.id, 0.0)   # no explicit duration
+
+    assert clip.duration == 7.0

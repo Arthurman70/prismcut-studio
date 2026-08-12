@@ -335,7 +335,11 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- actions
     def _preview_media(self, media_id: str):
         item = self.project.media.get(media_id)
-        if item:
+        if not item:
+            return
+        if item.kind == "title":
+            self.clip_monitor.show_title(item.meta, self.project.height)
+        else:
             self.clip_monitor.show_media(item.path)
 
     def _open_in_studio(self, media_id: str):

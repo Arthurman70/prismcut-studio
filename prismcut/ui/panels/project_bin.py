@@ -15,7 +15,8 @@ from ...core.project import MediaItem, Project
 from ...core.undo_commands import AddOrRemoveItemCommand, ChangePropertiesCommand
 from ..widgets.common import DropAcceptor
 
-GROUPS = [("import", "📁 Media"), ("generated", "✨ AI Generated"), ("audio", "🎵 Audio")]
+GROUPS = [("import", "📁 Media"), ("generated", "✨ AI Generated"), ("audio", "🎵 Audio"),
+          ("titles", "🔤 Titles")]
 
 
 class ProjectBin(QWidget):
@@ -38,12 +39,16 @@ class ProjectBin(QWidget):
         btns = QHBoxLayout()
         add = QPushButton("＋ Import media")
         add.clicked.connect(self.import_dialog)
+        add_title = QPushButton("🔤 Title")
+        add_title.setToolTip("Add a text/title clip")
+        add_title.clicked.connect(self.add_title_dialog)
         rm = QPushButton("🗑")
         rm.setFixedWidth(34)
         rm.setToolTip("Remove selected from project")
         rm.setAccessibleName("Remove selected media from project")
         rm.clicked.connect(self._remove_selected)
         btns.addWidget(add, 1)
+        btns.addWidget(add_title)
         btns.addWidget(rm)
         lay.addLayout(btns)
 
@@ -104,13 +109,16 @@ class ProjectBin(QWidget):
                 group = "audio"
             node = QTreeWidgetItem([self._label_for(item)])
             node.setData(0, Qt.ItemDataRole.UserRole, item.id)
-            thumb = media_utils.thumbnail(item.path)
+            thumb = None if item.kind == "title" else media_utils.thumbnail(item.path)
             if thumb:
                 node.setIcon(0, QIcon(QPixmap(str(thumb))))
             else:
-                node.setText(0, {"image": "🖼 ", "video": "🎬 ", "audio": "🎵 "}.get(item.kind, "📄 ")
-                             + self._label_for(item))
-            node.setToolTip(0, item.path + (f"\n{item.meta.get('prompt', '')}" if item.meta else ""))
+                node.setText(0, {"image": "🖼 ", "video": "🎬 ", "audio": "🎵 ", "title": "🔤 "}
+                             .get(item.kind, "📄 ") + self._label_for(item))
+            if item.kind == "title":
+                node.setToolTip(0, item.meta.get("title_text", item.label))
+            else:
+                node.setToolTip(0, item.path + (f"\n{item.meta.get('prompt', '')}" if item.meta else ""))
             roots[group].addChild(node)
         self.tree.expandAll()
         self._filter(self.search.text())
@@ -164,6 +172,20 @@ class ProjectBin(QWidget):
         item = self.project.add_media(path, group=group, meta=meta)
         self.undo_stack.push(AddOrRemoveItemCommand(
             f"Add {item.label or 'media'}", add=True,
+            insert=lambda: self.project.media.__setitem__(item.id, item),
+            remove=lambda: self.project.media.pop(item.id, None),
+            refresh=self._undo_refresh))
+        return item
+
+    def add_title_dialog(self):
+        from ..dialogs.title_dialog import TitleDialog
+        dlg = TitleDialog(self.project, self)
+        if dlg.exec():
+            self.add_title_media(dlg.result_media())
+
+    def add_title_media(self, item: MediaItem):
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            f"Add {item.label or 'title'}", add=True,
             insert=lambda: self.project.media.__setitem__(item.id, item),
             remove=lambda: self.project.media.pop(item.id, None),
             refresh=self._undo_refresh))
@@ -244,7 +266,8 @@ class ProjectBin(QWidget):
             menu.addAction("📝 Transcribe (AI)", lambda: self.transcribeRequested.emit(mid))
         menu.addSeparator()
         menu.addAction("✎ Rename…", lambda: self._rename(item))
-        menu.addAction("📁 Reveal in Explorer", lambda: self._reveal(item))
+        if item.kind != "title":
+            menu.addAction("📁 Reveal in Explorer", lambda: self._reveal(item))
         menu.addSeparator()
         n = len(self._selected_ids())
         menu.addAction(f"🗑 Remove {n} selected" if n > 1 else "🗑 Remove from project",

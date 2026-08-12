@@ -333,3 +333,96 @@ def test_unlabeled_marker_gets_a_default_chapter_title(monkeypatch, tmp_path):
 
     chapters_path = Path(_arg_after(cmd, "-i", occurrence=cmd.count("-i") - 1))
     assert "title=Chapter 1" in chapters_path.read_text(encoding="utf-8")
+
+
+def test_ffmpeg_color_converts_hex_to_0x_syntax():
+    from prismcut.core.render import _ffmpeg_color
+
+    assert _ffmpeg_color("#e8a33d") == "0xe8a33d"
+    assert _ffmpeg_color("") == "0xffffff"   # falsy input falls back to white
+
+
+def test_drawtext_escape_handles_colons_quotes_backslashes_and_newlines():
+    from prismcut.core.render import _drawtext_escape
+
+    assert _drawtext_escape("12:30") == "12\\:30"
+    assert _drawtext_escape("it's") == "it\\'s"
+    assert _drawtext_escape("a\\b") == "a\\\\b"
+    assert _drawtext_escape("line one\nline two") == "line one line two"
+
+
+def test_title_clip_uses_lavfi_color_source_not_a_file(tmp_path):
+    p = Project()
+    item = p.add_title("Hello", duration=4.0)
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 4.0)
+    opts = RenderOptions(width=1280, height=720, fps=30, fmt="mp4",
+                         out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+
+    assert "-f" in cmd
+    lavfi_idx = cmd.index("lavfi")
+    assert cmd[lavfi_idx - 1] == "-f"
+    color_arg = _arg_after(cmd, "-i", occurrence=0)
+    assert color_arg == "color=c=black@0.0:s=1280x720:r=30"
+    joined = " ".join(cmd)
+    assert "drawtext=" in joined
+    assert "text='Hello'" in joined
+    assert "fontsize=64" in joined
+    assert "fontcolor=0xffffff" in joined
+    assert "format=yuva420p" in joined
+
+
+def test_title_clip_bold_and_position_selection(tmp_path):
+    p = Project()
+    item = p.add_title("Lower Third", font_size=32, color="#42a5f5",
+                       position="bottom", bold=False, shadow=False, duration=2.0)
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 2.0)
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    joined = " ".join(build_command(p, opts))
+
+    assert "arial.ttf" in joined and "arialbd.ttf" not in joined
+    assert "fontcolor=0x42a5f5" in joined
+    assert "y=h-text_h-h*0.08" in joined
+    assert "shadowcolor" not in joined   # shadow disabled
+
+
+def test_title_clip_shadow_and_bold_defaults(tmp_path):
+    p = Project()
+    item = p.add_title("Card")   # bold=True, shadow=True by default
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 5.0)
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    joined = " ".join(build_command(p, opts))
+
+    assert "arialbd.ttf" in joined
+    assert "shadowcolor=black@0.7" in joined
+
+
+def test_title_clip_text_is_escaped_in_the_filtergraph(tmp_path):
+    p = Project()
+    item = p.add_title("It's 12:30")
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 5.0)
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    joined = " ".join(build_command(p, opts))
+
+    assert "text='It\\'s 12\\:30'" in joined
+
+
+def test_title_clip_has_no_embedded_audio_mixed_in(tmp_path):
+    p = Project()
+    item = p.add_title("Silent")
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 5.0)
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    cmd = build_command(p, opts)
+
+    assert "amix" not in " ".join(cmd)
+    assert "[aout]" not in cmd

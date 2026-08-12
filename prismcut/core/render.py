@@ -93,10 +93,59 @@ def _write_chapters_file(project: Project, total: float) -> Optional[Path]:
     return path
 
 
-def _clip_video_filters(c: Clip, w: int, h: int) -> str:
+_TITLE_POSITIONS = {"top": "h*0.08", "center": "(h-text_h)/2", "bottom": "h-text_h-h*0.08"}
+
+
+def _ffmpeg_color(hexval: str) -> str:
+    """'#RRGGBB' -> ffmpeg's '0xRRGGBB' color-spec syntax."""
+    return "0x" + (hexval or "#ffffff").lstrip("#")
+
+
+def _drawtext_escape(text: str) -> str:
+    """Escapes a value bound for a single-quoted drawtext option - backslash
+    first (so the next two substitutions don't double-escape their own
+    backslashes), then the two characters that would otherwise end the
+    quoted value or the filter option early. Titles are single-line only
+    for this v1, so newlines just become spaces rather than attempting
+    drawtext's own multi-line escaping."""
+    text = (text or "").replace("\n", " ")
+    return text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+
+
+def _title_drawtext(m, w: int, h: int) -> str:
+    """ffmpeg drawtext filter for a title clip's text, drawn onto the
+    transparent lavfi color source build_command() generates as its input
+    (see the 'title' branch there). Hardcodes Windows' bundled Arial
+    (regular/bold) via fontfile= rather than font= + fontconfig, since
+    PrismCut only targets Windows and many minimal ffmpeg builds aren't
+    compiled with fontconfig support drawtext would otherwise need to
+    resolve a font by name."""
+    meta = m.meta or {}
+    text = _drawtext_escape(str(meta.get("title_text", "")))
+    size = int(meta.get("font_size", 64) or 64)
+    color = _ffmpeg_color(meta.get("color", "#ffffff"))
+    y = _TITLE_POSITIONS.get(meta.get("position", "center"), _TITLE_POSITIONS["center"])
+    font = "C\\:/Windows/Fonts/arialbd.ttf" if meta.get("bold", True) else "C\\:/Windows/Fonts/arial.ttf"
+    parts = [f"drawtext=fontfile='{font}'", f"text='{text}'", f"fontsize={size}",
+             f"fontcolor={color}", "x=(w-text_w)/2", f"y={y}"]
+    if meta.get("shadow", True):
+        parts += ["shadowcolor=black@0.7", "shadowx=2", "shadowy=2"]
+    return ":".join(parts)
+
+
+def _clip_video_filters(c: Clip, w: int, h: int, m=None) -> str:
     fx = c.effects or {}
-    chain = [f"scale={w}:{h}:force_original_aspect_ratio=decrease",
-             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black", "setsar=1"]
+    chain = []
+    if m is not None and getattr(m, "kind", None) == "title":
+        # yuva420p up front (not just at the chain's existing end) so
+        # drawtext paints onto an alpha-aware frame and the transparent
+        # lavfi background survives scale/pad below instead of being
+        # flattened to opaque black by the time alpha would otherwise
+        # first get introduced.
+        chain.append("format=yuva420p")
+        chain.append(_title_drawtext(m, w, h))
+    chain += [f"scale={w}:{h}:force_original_aspect_ratio=decrease",
+              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black", "setsar=1"]
     speed = _clip_speed(c)
     eq = []
     if fx.get("brightness") not in (None, 0):
@@ -175,13 +224,19 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
             if not m or c.muted or track.mute:
                 continue
             src = str(Path(m.path))
-            if m.kind == "image":
+            if m.kind == "title":
+                # No real file to demux - a lavfi color source generates a
+                # transparent canvas of exactly the requested duration, so
+                # unlike image/video there's no separate -ss/in_point concept.
+                color_src = f"color=c=black@0.0:s={w}x{h}:r={fps}"
+                inputs.append(["-f", "lavfi", "-t", _esc(_source_trim_duration(c)), "-i", color_src])
+            elif m.kind == "image":
                 inputs.append(["-loop", "1", "-t", _esc(c.duration), "-framerate", str(fps), "-i", src])
             else:
                 inputs.append(["-ss", _esc(c.in_point), "-t", _esc(_source_trim_duration(c)), "-i", src])
             if not audio_only:
                 lbl = f"v{idx}"
-                vparts.append(f"[{idx}:v]{_clip_video_filters(c, w, h)}[{lbl}]")
+                vparts.append(f"[{idx}:v]{_clip_video_filters(c, w, h, m)}[{lbl}]")
                 vlabels.append((lbl, c.start, c.end))
             if m.kind == "video" and m.has_audio and not c.strip_audio and audible(track):
                 al = f"a{idx}"

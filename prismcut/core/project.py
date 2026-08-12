@@ -111,6 +111,28 @@ class Project:
         self.dirty = True
         return item
 
+    def add_title(self, text: str, *, font_size: int = 64, color: str = "#ffffff",
+                  position: str = "center", bold: bool = True, shadow: bool = True,
+                  duration: float = 5.0) -> MediaItem:
+        """Synthetic media item for a text/title clip - unlike add_media(),
+        it has no real backing file: render.py generates the frame on the
+        fly (an ffmpeg lavfi color source + drawtext, see
+        _title_drawtext()), and the Project/Clip Monitor draw a QPainter
+        preview instead of decoding a file (see MonitorBase.show_title()).
+        Style lives in meta rather than new MediaItem fields, the same way
+        generated media already carries provider/prompt info there."""
+        item = MediaItem(
+            id=_uid(), path=f"title-{_uid()}", kind="title", label=text.strip()[:40] or "Title",
+            duration=max(0.2, duration), width=self.width, height=self.height, has_audio=False,
+            group="titles", meta={
+                "title_text": text, "font_size": font_size, "color": color,
+                "position": position, "bold": bold, "shadow": shadow,
+            },
+        )
+        self.media[item.id] = item
+        self.dirty = True
+        return item
+
     def remove_media(self, media_id: str) -> None:
         self.media.pop(media_id, None)
         for cid in [c.id for c in self.clips.values() if c.media_id == media_id]:
