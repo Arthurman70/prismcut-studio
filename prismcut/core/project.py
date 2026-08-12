@@ -55,6 +55,12 @@ class Clip:
     fade_in: float = 0.0
     fade_out: float = 0.0
     muted: bool = False
+    # Set on a video clip whose audio was auto-split onto a companion clip
+    # (see Project.split_video_audio) - the source file still has its own
+    # embedded audio, but it's excluded from playback/export so the split
+    # audio clip is the only thing that plays it, avoiding doubled sound.
+    # Distinct from `muted`, which hides the whole clip (picture and all).
+    strip_audio: bool = False
     effects: dict = field(default_factory=dict)
     # effects keys: scale_pct, pos_x, pos_y, rotate_deg, opacity, brightness,
     #               contrast, saturation, blur, speed
@@ -174,6 +180,51 @@ class Project:
                     if m:
                         return c, m, c.in_point + (t - c.start)
         return None, None, 0.0
+
+    def resolve_audio_at(self, t: float):
+        """Topmost audible audio-track clip covering time t -> (clip, media,
+        source_offset) - the audio-track equivalent of resolve_at(), used by
+        preview to mix in sound resolve_at() can't see because it only ever
+        looks at video tracks (a video's auto-split companion clip,
+        freestanding background music, narration, ...)."""
+        for track in self.audio_tracks():
+            if track.mute:
+                continue
+            for c in self.clips_on(track.id):
+                if not c.muted and c.start <= t < c.end:
+                    m = self.media.get(c.media_id)
+                    if m:
+                        return c, m, c.in_point + (t - c.start)
+        return None, None, 0.0
+
+    def split_video_audio(self, clip: "Clip") -> Optional["Clip"]:
+        """Extracts a video clip's embedded audio onto a new companion Clip
+        on an audio track (same start/duration/in_point), and marks the
+        video clip strip_audio so its own embedded track no longer also
+        plays - each can then be trimmed, muted, or deleted independently.
+        Best-effort: returns None (video clip left untouched, still plays
+        its own embedded audio as before) if there's no audio track to
+        receive the split or ffmpeg extraction fails - never raises, since
+        this runs inline in the normal "add this clip to the timeline"
+        path and a missing ffmpeg shouldn't block that."""
+        item = self.media.get(clip.media_id)
+        if not item or item.kind != "video" or not item.has_audio:
+            return None
+        audio_tracks = self.audio_tracks()
+        if not audio_tracks:
+            return None
+        audio_path = media_utils.extract_audio(item.path)
+        if not audio_path:
+            return None
+        audio_item = self.add_media(audio_path, group="audio",
+                                    meta={"source": "split_from_video", "video_media_id": item.id})
+        audio_clip = self.add_clip(audio_item.id, audio_tracks[0].id, clip.start, clip.duration,
+                                   label=f"{clip.label or item.label} (audio)")
+        if not audio_clip:
+            return None
+        audio_clip.in_point = clip.in_point
+        clip.strip_audio = True
+        return audio_clip
 
     # ------------------------------------------------------------------ io
     def to_dict(self) -> dict:

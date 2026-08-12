@@ -590,6 +590,15 @@ class PipelineRun(QObject):
             self.win.timeline.delete_clip(old_clip.id)
         else:
             start, track_id, duration = self._scene_fallback_start(scene), self.pipeline.video_track_id, 3.0
+        # A finished video's own real (already-probed) length is the actual
+        # authoritative answer to "how long is this scene" once one exists -
+        # the duration inherited above is just the interim image+audio
+        # placeholder's length (driven by narration audio). Without this, a
+        # scene's requested video_params["duration"] had no visible effect:
+        # the AI could honor a 10s request and the timeline clip would still
+        # only ever be however long the placeholder happened to be.
+        if clip_key == "video" and item.duration and item.duration > 0:
+            duration = item.duration
         new_clip = self.win.timeline.add_media_at_playhead(
             item.id, track_id, start, duration, label=f"Scene {scene.index + 1}")
         self.win.undo_stack.endMacro()

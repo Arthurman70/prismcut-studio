@@ -121,7 +121,7 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
                 lbl = f"v{idx}"
                 vparts.append(f"[{idx}:v]{_clip_video_filters(c, w, h)}[{lbl}]")
                 vlabels.append((lbl, c.start, c.end))
-            if m.kind == "video" and m.has_audio and audible(track):
+            if m.kind == "video" and m.has_audio and not c.strip_audio and audible(track):
                 al = f"a{idx}"
                 aparts.append(f"[{idx}:a]{_clip_audio_filters(c, track.gain_db)}[{al}]")
                 alabels.append(al)

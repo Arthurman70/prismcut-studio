@@ -276,6 +276,80 @@ def test_monitor_media_status_changed_is_a_noop_without_a_pending_seek(win):
         mon.player = saved
 
 
+# -------------------------------------------------- monitor/second audio player
+
+def test_project_monitor_audio_seek_seconds_seeks_immediately_when_ready(win):
+    """Same deferred-seek contract as the primary player (see above),
+    duplicated for the secondary audio-only player that mixes in sound
+    from a separate audio-track clip resolve_at() never looks at."""
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    mon = win.project_monitor
+    if mon.audio_player is None:
+        pytest.skip("QtMultimedia backend unavailable in this environment")
+    fake = _FakePlayer(QMediaPlayer.MediaStatus.LoadedMedia)
+    saved = mon.audio_player
+    mon.audio_player = fake
+    try:
+        mon._audio_seek_seconds(1.5)
+        assert fake.positions == [1500]
+        assert mon._pending_audio_seek is None
+    finally:
+        mon.audio_player = saved
+
+
+def test_project_monitor_audio_seek_seconds_defers_until_ready(win):
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    mon = win.project_monitor
+    if mon.audio_player is None:
+        pytest.skip("QtMultimedia backend unavailable in this environment")
+    fake = _FakePlayer(QMediaPlayer.MediaStatus.LoadingMedia)
+    saved = mon.audio_player
+    mon.audio_player = fake
+    try:
+        mon._audio_seek_seconds(3.0)
+        assert fake.positions == []
+        assert mon._pending_audio_seek == 3.0
+
+        mon._audio_media_status_changed(QMediaPlayer.MediaStatus.LoadedMedia)
+        assert fake.positions == [3000]
+        assert mon._pending_audio_seek is None
+    finally:
+        mon.audio_player = saved
+
+
+def test_project_monitor_preview_at_mixes_in_separate_audio_track_clip(win):
+    """The actual feature: previewing/scrubbing the timeline now plays
+    sound from a clip on the audio track (a video's auto-split companion,
+    background music, narration, ...) even though resolve_at() - which
+    decides what picture to show - never looks at audio tracks at all."""
+    from prismcut.core.project import Project
+
+    mon = win.project_monitor
+    if mon.audio_player is None:
+        pytest.skip("QtMultimedia backend unavailable in this environment")
+    saved_project = mon.project
+    p = Project()
+    img_item = p.add_media(__file__)   # content doesn't matter, existence does
+    img_item.kind = "image"
+    aud_item = p.add_media(__file__, group="audio")
+    aud_item.kind = "audio"
+    v1 = p.video_tracks()[-1]
+    a1 = p.audio_tracks()[0]
+    p.add_clip(img_item.id, v1.id, 0.0, 5.0)
+    p.add_clip(aud_item.id, a1.id, 0.0, 5.0)
+    mon.set_project(p)
+    try:
+        mon.preview_at(2.0)
+        assert mon._preview_audio_media_id == aud_item.id
+
+        mon.preview_at(10.0)   # past both clips
+        assert mon._preview_audio_media_id is None
+    finally:
+        mon.set_project(saved_project)
+
+
 def test_agent_mode_toggle_exists_and_is_off_by_default(win):
     assert win.agent is not None
     assert win.chat.agent_mode is not None
@@ -748,6 +822,59 @@ def test_regenerate_image_swaps_the_already_placed_timeline_clip(win):
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_regenerate_video_swap_uses_the_new_videos_real_duration(win, monkeypatch, tmp_path):
+    """The actual bug: swapping in a finished video used to always inherit
+    the OLD (interim image+audio placeholder) clip's duration, ignoring
+    the new video's own real (already-probed) length - meaning a scene's
+    requested video_params["duration"] (the per-scene length control from
+    the Details panel, task #59/#60) had no visible effect on the
+    timeline no matter what the AI actually generated."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+    from prismcut.core import project as project_mod
+
+    video_path = tmp_path / "fresh_video.mp4"
+    video_path.write_bytes(b"fake-mp4-bytes")
+    real_probe = project_mod.media_utils.probe
+
+    def fake_probe(path):
+        if str(path) == str(video_path):
+            return {"duration": 9.5, "width": 1920, "height": 1080,
+                    "has_audio": True, "has_video": True}
+        return real_probe(path)
+
+    monkeypatch.setattr(project_mod.media_utils, "probe", fake_probe)
+
+    class FakeVideoAdapter:
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            return str(video_path)
+
+    pipeline = MoviePipeline(name="Duration fix test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeVideoAdapter()
+    try:
+        run._ensure_tracks()
+        img_item = win.bin.add_generated(__file__, {"mode": "image"})
+        old_clip = win.timeline.add_media_at_playhead(
+            img_item.id, pipeline.video_track_id, 0.0, 3.0, label="Scene 1")
+        scene.clip_ids["image"] = old_clip.id
+
+        run.regenerate_scene_video(scene.id)
+        assert _wait_until(lambda: old_clip.id not in win.project.clips)
+
+        new_clip = win.project.clips[scene.clip_ids["video"]]
+        assert new_clip.duration == 9.5
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_regenerate_current_stage_regenerates_video_when_video_already_exists(win):
     from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
 
@@ -1050,6 +1177,51 @@ def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
     finally:
         win.get_adapter = saved_get_adapter
         win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_add_media_at_playhead_auto_splits_video_audio_and_undo_removes_both(win, monkeypatch,
+                                                                              tmp_path):
+    """The auto-split feature: a video with embedded audio landing on the
+    timeline gets a companion audio clip at the same start/duration, and is
+    itself marked strip_audio so the sound doesn't play twice - bundled
+    into one undo step so Ctrl+Z doesn't leave an orphaned audio clip."""
+    from prismcut.core import project as project_mod
+
+    def fake_extract_audio(src, dst_ext=".m4a"):
+        out = tmp_path / "extracted.m4a"
+        out.write_bytes(b"fake-audio")
+        return out
+
+    monkeypatch.setattr(project_mod.media_utils, "extract_audio", fake_extract_audio)
+    vid = tmp_path / "clip.mp4"
+    vid.write_bytes(b"fake-mp4")
+    item = win.project.add_media(vid)
+    item.has_audio = True
+    audio_item_id = None
+    try:
+        before_ids = set(win.project.clips.keys())
+        clip = win.timeline.add_media_at_playhead(item.id)
+        assert clip is not None
+        assert clip.strip_audio is True
+        new_ids = set(win.project.clips.keys()) - before_ids
+        assert len(new_ids) == 2   # the video clip + its auto-split audio companion
+
+        audio_clip = next(win.project.clips[cid] for cid in new_ids if cid != clip.id)
+        audio_item_id = audio_clip.media_id
+        assert audio_clip.start == clip.start
+        assert audio_clip.duration == clip.duration
+        assert audio_clip.track_id in {t.id for t in win.project.audio_tracks()}
+
+        win.undo_stack.undo()
+        assert set(win.project.clips.keys()) == before_ids   # both removed together
+
+        win.undo_stack.redo()
+        assert set(win.project.clips.keys()) - before_ids == new_ids   # both restored together
+    finally:
+        win.project.remove_media(item.id)
+        if audio_item_id:
+            win.project.remove_media(audio_item_id)
+        win.timeline.refresh(True)
 
 
 def test_timeline_reveal_clip_seeks_scrolls_and_selects(win):

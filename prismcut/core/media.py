@@ -185,6 +185,29 @@ def convert_audio(src, dst_ext: str = ".wav") -> Optional[Path]:
         return src
 
 
+def extract_audio(src, dst_ext: str = ".m4a") -> Optional[Path]:
+    """Pulls just the audio stream out of a video file (ffmpeg -vn), so it
+    can be edited as an independent clip - distinct from convert_audio()
+    (which re-encodes a file that's already audio-only). Returns None on
+    failure rather than the original path: callers need to tell "here's
+    your extracted audio" apart from "extraction didn't happen", since on
+    failure a video clip should keep playing its own embedded audio
+    instead of being silently muted with nothing to replace it."""
+    ff = ffmpeg_path()
+    src = Path(src)
+    if not ff or not src.exists():
+        return None
+    out = paths.cache_dir() / f"{src.stem}_audio_{abs(hash((str(src), src.stat().st_mtime)))}{dst_ext}"
+    if out.exists():
+        return out
+    try:
+        subprocess.run([ff, "-y", "-v", "error", "-i", str(src), "-vn", str(out)],
+                       capture_output=True, timeout=300)
+        return out if out.exists() else None
+    except Exception:
+        return None
+
+
 def pcm_to_wav(pcm: bytes, out_path: Path, rate: int = 24000, channels: int = 1,
                sampwidth: int = 2) -> Path:
     """Wrap raw 16-bit PCM (e.g. Gemini TTS output) into a WAV container."""

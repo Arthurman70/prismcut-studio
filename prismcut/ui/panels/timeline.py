@@ -633,11 +633,25 @@ class TimelineWidget(QWidget):
         clip = self.project.add_clip(media_id, tr.id, t, duration, label)
         if not clip:
             return None
+        # A video landing on the timeline gets its audio auto-split onto a
+        # companion clip so each can be trimmed/muted/deleted independently -
+        # bundled into the SAME undo step as adding the video itself, so one
+        # Ctrl+Z removes both rather than leaving an orphaned audio clip.
+        audio_clip = self.project.split_video_audio(clip)
+
+        def insert():
+            self.project.clips[clip.id] = clip
+            if audio_clip:
+                self.project.clips[audio_clip.id] = audio_clip
+
+        def remove():
+            self.project.clips.pop(clip.id, None)
+            if audio_clip:
+                self.project.clips.pop(audio_clip.id, None)
+
         self.undo_stack.push(AddOrRemoveItemCommand(
             f"Add {clip.label or 'media'} to timeline", add=True,
-            insert=lambda: self.project.clips.__setitem__(clip.id, clip),
-            remove=lambda: self.project.clips.pop(clip.id, None),
-            refresh=self._undo_refresh))
+            insert=insert, remove=remove, refresh=self._undo_refresh))
         return clip
 
     # ------------------------------------------------------------ selection

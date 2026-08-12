@@ -58,6 +58,28 @@ def test_mov_command_uses_h264_and_faststart(tmp_path):
     assert "out.mov" in joined
 
 
+def test_video_clip_with_strip_audio_excluded_from_audio_mix(tmp_path):
+    """A video clip that's had its audio auto-split onto a companion clip
+    (Clip.strip_audio) must not ALSO contribute its own embedded audio to
+    the export mix - otherwise the split clip's sound plays twice."""
+    vid = tmp_path / "clip.mp4"
+    vid.write_bytes(b"fake-mp4")  # existence is enough for command building
+    p = Project()
+    item = p.add_media(vid)
+    item.has_audio = True
+    v1 = p.video_tracks()[-1]
+    clip = p.add_clip(item.id, v1.id, 0.0, 4.0)
+    opts = RenderOptions(width=1280, height=720, fps=30, fmt="mp4",
+                         out_path=str(tmp_path / "out.mp4"))
+
+    normal_cmd = " ".join(build_command(p, opts))
+    assert ":a]" in normal_cmd   # the video's own embedded audio is included
+
+    clip.strip_audio = True
+    stripped_cmd = " ".join(build_command(p, opts))
+    assert ":a]" not in stripped_cmd   # excluded once split onto a companion clip
+
+
 def test_mov_prores_command_uses_prores_and_pcm_audio_no_faststart(tmp_path):
     p = make_project(tmp_path)
     opts = RenderOptions(fmt="mov-prores", out_path=str(tmp_path / "out.mov"))

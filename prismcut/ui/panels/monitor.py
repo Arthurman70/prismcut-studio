@@ -192,17 +192,45 @@ class ClipMonitor(MonitorBase):
 
 
 class ProjectMonitor(MonitorBase):
-    """Previews the timeline at the playhead (topmost clip under the cursor)."""
+    """Previews the timeline at the playhead (topmost clip under the cursor).
+
+    resolve_at() only ever looks at video tracks, so on its own this monitor
+    is deaf to anything living on an audio track - a video's auto-split
+    audio companion (see Project.split_video_audio), background music,
+    narration. A second, audio-only QMediaPlayer, driven by
+    Project.resolve_audio_at(), mixes that back in - kept in sync with the
+    primary player for play/pause (see toggle_play) since QMediaPlayer has
+    no built-in way to gang two players together."""
     requestAddAtPlayhead = Signal()
 
     def __init__(self, project: Project, parent=None):
         super().__init__("Project Monitor", parent)
         self.project = project
         self._preview_media_id: str | None = None
+        self._preview_audio_media_id: str | None = None
+        self.audio_player = None
+        if HAVE_MM:
+            try:
+                self.audio_player = QMediaPlayer()
+                self._audio_out2 = QAudioOutput()
+                self.audio_player.setAudioOutput(self._audio_out2)
+                self.audio_player.mediaStatusChanged.connect(self._audio_media_status_changed)
+            except Exception:
+                self.audio_player = None
+        self._pending_audio_seek: float | None = None
 
     def set_project(self, project: Project):
         self.project = project
         self._preview_media_id = None
+        self._preview_audio_media_id = None
+
+    def toggle_play(self):
+        super().toggle_play()
+        if self.audio_player and self.player:
+            if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self.audio_player.play()
+            else:
+                self.audio_player.pause()
 
     def preview_at(self, t: float):
         clip, item, offset = self.project.resolve_at(t)
@@ -214,8 +242,7 @@ class ProjectMonitor(MonitorBase):
             self._preview_media_id = None
             if self.player:
                 self.player.pause()
-            return
-        if item.kind == "image":
+        elif item.kind == "image":
             if self._preview_media_id != item.id:
                 self.show_image(item.path)
                 self._preview_media_id = item.id
@@ -224,3 +251,44 @@ class ProjectMonitor(MonitorBase):
                 self.show_media(item.path)
                 self._preview_media_id = item.id
             self.seek_seconds(offset)
+        self._sync_audio_track(t)
+
+    def _sync_audio_track(self, t: float) -> None:
+        """Loads/seeks the secondary player to whatever audio-track clip
+        covers time t, independent of whatever the video track is showing -
+        the two clips are usually different media (e.g. a split video's own
+        now-silent picture plus its companion audio)."""
+        if not self.audio_player:
+            return
+        _clip, aitem, aoffset = self.project.resolve_audio_at(t)
+        if aitem is None:
+            self._preview_audio_media_id = None
+            self.audio_player.pause()
+            return
+        if self._preview_audio_media_id != aitem.id:
+            self.audio_player.setSource(QUrl.fromLocalFile(aitem.path))
+            self._preview_audio_media_id = aitem.id
+        self._audio_seek_seconds(aoffset)
+
+    def _audio_seek_seconds(self, t: float) -> None:
+        """Same deferred-seek fix as MonitorBase.seek_seconds (setSource()
+        is async), duplicated for this second player rather than shared -
+        keeps the already-tested primary-player code path untouched."""
+        if not self.audio_player:
+            return
+        ready = (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia,
+                QMediaPlayer.MediaStatus.EndOfMedia)
+        if self.audio_player.mediaStatus() in ready:
+            self.audio_player.setPosition(int(t * 1000))
+            self._pending_audio_seek = None
+        else:
+            self._pending_audio_seek = t
+
+    def _audio_media_status_changed(self, status) -> None:
+        if self._pending_audio_seek is None:
+            return
+        ready = (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia,
+                QMediaPlayer.MediaStatus.EndOfMedia)
+        if status in ready:
+            self.audio_player.setPosition(int(self._pending_audio_seek * 1000))
+            self._pending_audio_seek = None
