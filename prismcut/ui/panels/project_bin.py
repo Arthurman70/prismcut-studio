@@ -437,9 +437,16 @@ class ProjectBin(QWidget):
         now the canonical source."""
         info = media_utils.probe(Path(new_path))
         before = {"path": item.path, "duration": item.duration, "width": item.width,
-                 "height": item.height, "has_audio": item.has_audio, "offline": item.offline}
+                 "height": item.height, "has_audio": item.has_audio, "offline": item.offline,
+                 "proxy_path": item.proxy_path}
+        # A proxy already generated from the OLD file's bytes would silently
+        # keep being preferred for playback after relinking to a different
+        # file - clear it so the "Generate proxy..." menu action offers a
+        # fresh one instead of a stale mismatch. Undoing the relink restores
+        # it along with everything else, via the same before/after diff.
         after = {"path": str(new_path), "duration": info["duration"], "width": info["width"],
-                "height": info["height"], "has_audio": info["has_audio"], "offline": False}
+                "height": info["height"], "has_audio": info["has_audio"], "offline": False,
+                "proxy_path": ""}
         self.undo_stack.push(ChangePropertiesCommand(
             f"Relink {item.label or 'media'}", item, before, after, self._undo_refresh))
 

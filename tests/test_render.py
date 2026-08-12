@@ -753,3 +753,39 @@ def test_run_render_non_nvenc_failure_shows_raw_ffmpeg_output(monkeypatch, tmp_p
         assert "Hardware encoding (NVENC) failed" not in str(e)
         assert "ffmpeg failed" in str(e)
         assert "Unknown encoder" in str(e)
+
+
+# --------------------------------------------------------- feature composition
+
+def test_transition_pair_still_applies_full_per_clip_effect_chain(tmp_path):
+    """A clip crossfading into its neighbor gets folded into ONE xfade label
+    by build_command's transition-pair branch - this locks in that chroma
+    key/LUT/color/blur/opacity effects on that clip still apply before the
+    xfade, rather than the pair-handling code building a simplified filter
+    chain that silently drops them."""
+    from prismcut.core.render import _escape_filter_path
+
+    p = Project()
+    img_a = tmp_path / "a.png"
+    img_a.write_bytes(b"\x89PNG")
+    img_b = tmp_path / "b.png"
+    img_b.write_bytes(b"\x89PNG")
+    ia, ib = p.add_media(img_a), p.add_media(img_b)
+    v1 = p.video_tracks()[-1]
+    a = p.add_clip(ia.id, v1.id, 0.0, 4.0)
+    p.add_clip(ib.id, v1.id, 4.0, 3.0)   # exactly adjacent
+    a.transition_out = 1.0
+    lut_path = str(tmp_path / "look.cube")
+    a.effects = {"chroma_key": True, "lut_path": lut_path,
+                "brightness": 20, "blur": 4, "opacity": 80}
+    opts = RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))
+
+    joined = " ".join(build_command(p, opts))
+
+    assert "chromakey=color=0x00ff00:similarity=0.200:blend=0.100" in joined
+    assert "despill=type=green" in joined
+    assert f"lut3d=file='{_escape_filter_path(lut_path)}'" in joined
+    assert "eq=brightness=0.200" in joined
+    assert "gblur=sigma=4.00" in joined
+    assert "colorchannelmixer=aa=0.800" in joined
+    assert "xfade=transition=fade:duration=1:offset=3" in joined

@@ -2644,6 +2644,29 @@ def test_project_bin_relink_is_undoable(win, monkeypatch, tmp_path):
         win.bin.refresh()
 
 
+def test_project_bin_relink_clears_stale_proxy_and_undo_restores_it(win, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    vid = win.project.add_media(__file__)
+    vid.kind = "video"
+    vid.offline = True
+    vid.proxy_path = str(tmp_path / "stale_proxy.mp4")   # from the OLD file's bytes
+    replacement = tmp_path / "found.mp4"
+    replacement.write_bytes(b"fake-mp4")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(replacement), ""))
+    try:
+        win.bin._relink(vid)
+
+        assert vid.path == str(replacement)
+        assert vid.proxy_path == ""   # stale proxy invalidated, not silently kept
+
+        win.undo_stack.undo()
+        assert vid.proxy_path == str(tmp_path / "stale_proxy.mp4")   # restored with the rest
+    finally:
+        win.project.remove_media(vid.id)
+        win.bin.refresh()
+
+
 def test_project_bin_relink_cancelled_does_nothing(win, monkeypatch):
     from PySide6.QtWidgets import QFileDialog
 
