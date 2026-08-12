@@ -5,7 +5,7 @@ Thanks for helping build the open AI editing suite!
 ## Dev setup
 
 ```bash
-git clone https://github.com/YOURNAME/prismcut-studio
+git clone https://github.com/Arthurman70/prismcut-studio
 cd prismcut-studio
 python -m venv .venv && . .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -e .[dev]

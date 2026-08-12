@@ -2,12 +2,14 @@
 (OpenAI, xAI, DeepSeek, MiniMax, custom gateways...)."""
 from __future__ import annotations
 
-from typing import Optional
+import json
+from typing import Callable, Optional
 
 from ..core import http
 from ..core.http import ProviderError
 from ..core.media import kind_of
 from .base import Adapter, CancelFn, ChatMessage, DeltaFn
+from .tools import MAX_TOOL_ITERATIONS, Tool, ToolCall, ToolResult
 
 
 class OpenAICompatChat(Adapter):
@@ -44,16 +46,57 @@ class OpenAICompatChat(Adapter):
                 ", ".join(str(s) for s in skipped) + "]"
         return parts
 
+    def _payload_message(self, m: ChatMessage) -> dict:
+        if m.role == "assistant" and m.tool_calls:
+            return {"role": "assistant", "content": m.text or None,
+                    "tool_calls": [{"id": tc.id, "type": "function",
+                                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
+                                   for tc in m.tool_calls]}
+        if m.role == "tool":
+            return {"role": "tool", "tool_call_id": m.tool_call_id, "content": m.text}
+        return {"role": m.role, "content": self._content_for(m)}
+
     def chat(self, model: str, messages: list[ChatMessage], system: str = "",
              temperature: float = 0.7, on_delta: Optional[DeltaFn] = None,
-             should_cancel: Optional[CancelFn] = None) -> str:
+             should_cancel: Optional[CancelFn] = None,
+             tools: Optional[list[Tool]] = None,
+             on_tool_call: Optional[Callable[[ToolCall], ToolResult]] = None) -> str:
         url = self.base_url() + self.chat_path
         payload_msgs = []
         if system:
             payload_msgs.append({"role": "system", "content": system})
         for m in messages:
-            payload_msgs.append({"role": m.role, "content": self._content_for(m)})
+            payload_msgs.append(self._payload_message(m))
         body = {"model": model, "messages": payload_msgs, "temperature": temperature}
+
+        if tools and on_tool_call:
+            body["tools"] = [{"type": "function",
+                              "function": {"name": t.name, "description": t.description,
+                                          "parameters": t.parameters}} for t in tools]
+            body["tool_choice"] = "auto"
+            for _ in range(MAX_TOOL_ITERATIONS):
+                if should_cancel and should_cancel():
+                    return ""
+                data = http.request_json("POST", url, headers=self._chat_headers(), json_body=body)
+                msg = data["choices"][0]["message"]
+                raw_calls = msg.get("tool_calls") or []
+                if not raw_calls:
+                    text = msg.get("content") or ""
+                    if isinstance(text, list):
+                        text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+                    return text or ""
+                payload_msgs.append({"role": "assistant", "content": msg.get("content"),
+                                     "tool_calls": raw_calls})
+                for rc in raw_calls:
+                    try:
+                        args = json.loads(rc["function"]["arguments"] or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    result = on_tool_call(ToolCall(rc["id"], rc["function"]["name"], args))
+                    payload_msgs.append({"role": "tool", "tool_call_id": result.tool_call_id,
+                                         "content": result.content})
+                body["messages"] = payload_msgs
+            return ""  # exhausted MAX_TOOL_ITERATIONS without a final answer
 
         if self.supports_stream and on_delta is not None:
             body["stream"] = True

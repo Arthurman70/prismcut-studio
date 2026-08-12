@@ -14,13 +14,16 @@ from typing import Callable, Optional
 from ..core import paths
 from ..core.http import NotSupported, ProviderError
 from ..core.registry import ProviderSpec
+from .tools import Tool, ToolCall, ToolResult
 
 
 @dataclass
 class ChatMessage:
-    role: str                       # "user" | "assistant"
+    role: str                       # "user" | "assistant" | "tool"
     text: str
     attachments: list = field(default_factory=list)   # file paths (image/audio/video)
+    tool_calls: list = field(default_factory=list)    # list[ToolCall] - set on "assistant" turns that called tools
+    tool_call_id: str = ""                            # set on "tool" turns - which call this is the result of
 
 
 CancelFn = Callable[[], bool]
@@ -81,7 +84,15 @@ class Adapter:
     # ----------------------------------------------------------- capabilities
     def chat(self, model: str, messages: list[ChatMessage], system: str = "",
              temperature: float = 0.7, on_delta: Optional[DeltaFn] = None,
-             should_cancel: Optional[CancelFn] = None) -> str:
+             should_cancel: Optional[CancelFn] = None,
+             tools: Optional[list[Tool]] = None,
+             on_tool_call: Optional[Callable[[ToolCall], ToolResult]] = None) -> str:
+        """tools/on_tool_call are optional - only Google, the OpenAI-compatible
+        family, and Anthropic implement them. When tools is given, on_delta
+        is ignored (streaming + tool-call parsing isn't implemented for v1) -
+        the adapter internally loops: send -> if the model calls a tool,
+        invoke on_tool_call(call) synchronously, feed the ToolResult back,
+        repeat (capped at tools.MAX_TOOL_ITERATIONS) -> return final text."""
         raise NotSupported(f"{self.spec.label} has no chat support in PrismCut yet.")
 
     def generate_image(self, model: str, prompt: str, params: Optional[dict] = None,
@@ -93,8 +104,14 @@ class Adapter:
         raise NotSupported(f"{self.spec.label} has no image editing support yet.")
 
     def generate_video(self, model: str, prompt: str, params: Optional[dict] = None,
-                       image=None, progress: Optional[ProgressFn] = None,
+                       image=None, audio=None, progress: Optional[ProgressFn] = None,
                        should_cancel: Optional[CancelFn] = None) -> str:
+        """audio is an optional path to a driving audio track, for the rare
+        model that hard-syncs generated video to it natively (see
+        core.pipeline_orchestrator.resolve_video_plan - as of this writing
+        no configured model actually implements this branch; it's here so
+        one becoming available later is a models.json + small per-adapter
+        passthrough, not a signature change)."""
         raise NotSupported(f"{self.spec.label} has no video generation support yet.")
 
     def tts(self, model: str, text: str, voice: str = "", params: Optional[dict] = None) -> str:

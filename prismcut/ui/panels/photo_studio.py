@@ -17,9 +17,10 @@ from PySide6.QtWidgets import (QFileDialog, QGraphicsPixmapItem, QGraphicsScene,
                                QListWidgetItem, QPushButton, QScrollArea, QSlider,
                                QSplitter, QToolButton, QVBoxLayout, QWidget)
 
+from ...core import media as media_utils
 from ...core import paths
 from .. import theme
-from ..widgets.common import SliderSpin, accent_button, label
+from ..widgets.common import DropAcceptor, SliderSpin, accent_button, label
 from .nano_tools import NanoToolsPanel
 
 
@@ -196,6 +197,9 @@ class PhotoStudio(QWidget):
         self._compare = False
         self.canvas = PhotoCanvas()
         self.canvas.cropSelected.connect(self._crop_to)
+        DropAcceptor(self.canvas, ("image",), lambda p: self.open_path(p[0]),
+                    on_rejected=lambda bad: self.status.emit(
+                        f"Photo Studio only opens images - skipped {len(bad)} file(s)."))
 
         split = QSplitter(Qt.Orientation.Horizontal, self)
         lay = QHBoxLayout(self)
@@ -356,8 +360,7 @@ class PhotoStudio(QWidget):
         self.status.emit(f"Opened {p.name} in Photo Studio")
 
     def _open_dialog(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Open image", "",
-                                           "Images (*.png *.jpg *.jpeg *.webp *.bmp)")
+        f, _ = QFileDialog.getOpenFileName(self, "Open image", "", media_utils.IMAGE_FILTER)
         if f:
             self.open_path(f)
 
@@ -419,6 +422,14 @@ class PhotoStudio(QWidget):
         self._compare = on
         self.compare_slider.setVisible(on)
         self._update_display()
+
+    def refresh_theme(self):
+        """Called by MainWindow after a theme/density switch. The compare
+        divider line color is composited into the displayed pixmap (not
+        redrawn live by Qt), so it needs an explicit recompose to pick up
+        the new accent color."""
+        if self.current_path:
+            self._update_display()
 
     # ------------------------------------------------------------ local ops
     def _pil(self) -> Image.Image | None:

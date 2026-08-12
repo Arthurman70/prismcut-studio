@@ -45,7 +45,12 @@ class Replicate(Adapter):
                           should_cancel=should_cancel, label=f"Replicate {model.split('/')[-1]}")
 
     def _payload(self, prompt: str, params: Optional[dict], image=None) -> dict:
-        payload: dict = {"prompt": prompt}
+        payload: dict = {}
+        if prompt:
+            # Omitted (not just empty-string) when there's no real prompt -
+            # e.g. a lip-sync model call, which has nothing to do with text
+            # generation and might reject an unexpected empty field.
+            payload["prompt"] = prompt
         for k, v in (params or {}).items():
             if v not in (None, "", -1):
                 payload[k] = v

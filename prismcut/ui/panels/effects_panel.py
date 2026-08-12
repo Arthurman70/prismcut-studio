@@ -5,6 +5,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from ...core.project import Project
+from ...core.undo_commands import ChangePropertiesCommand
 from ..widgets.common import SliderSpin, label
 
 EFFECTS = [
@@ -22,11 +23,13 @@ EFFECTS = [
 class EffectsPanel(QWidget):
     effectsChanged = Signal()
 
-    def __init__(self, project: Project, parent=None):
+    def __init__(self, project: Project, undo_stack, parent=None):
         super().__init__(parent)
         self.project = project
+        self.undo_stack = undo_stack
         self.clip_id: str | None = None
         self._loading = False
+        self._gesture_before: dict | None = None
 
         host = QWidget()
         lay = QVBoxLayout(host)
@@ -38,6 +41,9 @@ class EffectsPanel(QWidget):
             lay.addWidget(QLabel(name))
             s = SliderSpin(lo, hi, default, decimals=decimals)
             s.valueChanged.connect(self._changed)
+            s.slider.sliderPressed.connect(self._begin_gesture)
+            s.slider.sliderReleased.connect(self._commit_gesture)
+            s.spin.editingFinished.connect(self._commit_gesture)
             self.sliders[key] = s
             lay.addWidget(s)
         reset = QPushButton("Reset all effects")
@@ -81,6 +87,9 @@ class EffectsPanel(QWidget):
         self._loading = False
 
     def _changed(self, *_a):
+        """Live-updates clip.effects on every tick for immediate visual
+        feedback (unchanged from before) - undo commands are pushed
+        separately, once per gesture, by _commit_gesture()."""
         if self._loading or not self.clip_id:
             return
         clip = self.project.clips.get(self.clip_id)
@@ -92,10 +101,32 @@ class EffectsPanel(QWidget):
         self.project.dirty = True
         self.effectsChanged.emit()
 
+    def _begin_gesture(self):
+        clip = self.project.clips.get(self.clip_id) if self.clip_id else None
+        self._gesture_before = dict(clip.effects) if clip else None
+
+    def _commit_gesture(self):
+        clip = self.project.clips.get(self.clip_id) if self.clip_id else None
+        if not clip or self._gesture_before is None:
+            self._gesture_before = None
+            return
+        before, after = self._gesture_before, dict(clip.effects)
+        self._gesture_before = None
+        if before != after:
+            self.undo_stack.push(ChangePropertiesCommand(
+                f"Adjust effects · {clip.label or 'clip'}", clip,
+                {"effects": before}, {"effects": after}, self.effectsChanged.emit))
+
     def _reset(self):
+        clip = self.project.clips.get(self.clip_id) if self.clip_id else None
+        before = dict(clip.effects) if clip else None
         defaults = {k: d for k, _n, _lo, _hi, d, _dec in EFFECTS}
         self._loading = True
         for k, s in self.sliders.items():
             s.set_value(defaults[k])
         self._loading = False
         self._changed()
+        if clip is not None and before != clip.effects:
+            self.undo_stack.push(ChangePropertiesCommand(
+                f"Reset effects · {clip.label or 'clip'}", clip,
+                {"effects": before}, {"effects": dict(clip.effects)}, self.effectsChanged.emit))

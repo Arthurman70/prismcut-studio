@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QComboBox, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QPlainTextEdit, QPushButton, QScrollArea, QTabWidget,
@@ -24,8 +24,9 @@ class PromptLab(QWidget):
     sendToGenerate = Signal(str, str)     # prompt, kind (image/video/music)
     status = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, settings, parent=None):
         super().__init__(parent)
+        self.settings = settings
         data = json.loads(TPL_PATH.read_text(encoding="utf-8"))
         self.templates: list[dict] = data.get("templates", [])
         self.tuning: dict[str, list[str]] = data.get("tuning", {})
@@ -49,6 +50,13 @@ class PromptLab(QWidget):
         self.editor.setMinimumHeight(70)
         self.editor.textChanged.connect(self._rebuild_vars)
         lay.addWidget(self.editor)
+
+        self._draft_timer = QTimer(self)
+        self._draft_timer.setSingleShot(True)
+        self._draft_timer.setInterval(800)
+        self._draft_timer.timeout.connect(
+            lambda: self.settings.set("promptlab/draft", self.editor.toPlainText()))
+        self.editor.textChanged.connect(self._draft_timer.start)
 
         self.var_host = QWidget()
         self.var_form = QFormLayout(self.var_host)
@@ -116,7 +124,11 @@ class PromptLab(QWidget):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         outer.addWidget(scroll)
         self.load_history()
-        self._update_preview()
+        draft = str(self.settings.get("promptlab/draft", ""))
+        if draft:
+            self.editor.setPlainText(draft)   # triggers _rebuild_vars/_update_preview itself
+        else:
+            self._update_preview()
 
     # ------------------------------------------------------------------
     def _tpl_changed(self, idx: int):
@@ -156,6 +168,9 @@ class PromptLab(QWidget):
         if prompt:
             self.sendToGenerate.emit(prompt, kind)
             self.status.emit(f"Prompt sent to {kind} generation")
+            # Not clearing the draft here: unlike Chat, sending to Generate
+            # doesn't consume the prompt (it's still useful to keep editing/
+            # re-send), so there's nothing stale to clear.
 
     # ------------------------------------------------------------------
     def load_history(self):

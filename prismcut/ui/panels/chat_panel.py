@@ -12,15 +12,16 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QInputDialog,
-                               QLabel, QMessageBox, QPlainTextEdit, QPushButton,
-                               QSlider, QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
+                               QInputDialog, QLabel, QMessageBox, QPlainTextEdit,
+                               QPushButton, QSlider, QTextBrowser, QVBoxLayout, QWidget)
 
+from ...core import media as media_utils
 from ...core import paths
 from ...providers.base import ChatMessage
 from .. import theme
-from ..widgets.common import ModelCombo, accent_button
+from ..widgets.common import DropAcceptor, ModelCombo, accent_button
 
 
 class ChatWorker(QThread):
@@ -29,13 +30,15 @@ class ChatWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, adapter, model_id: str, messages: list[ChatMessage],
-                 system: str, temperature: float):
+                 system: str, temperature: float, tools=None, on_tool_call=None):
         super().__init__()
         self.adapter = adapter
         self.model_id = model_id
         self.messages = messages
         self.system = system
         self.temperature = temperature
+        self.tools = tools
+        self.on_tool_call = on_tool_call
         self._stop = False
 
     def stop(self):
@@ -46,7 +49,8 @@ class ChatWorker(QThread):
             text = self.adapter.chat(self.model_id, self.messages, system=self.system,
                                      temperature=self.temperature,
                                      on_delta=self.delta.emit,
-                                     should_cancel=lambda: self._stop)
+                                     should_cancel=lambda: self._stop,
+                                     tools=self.tools, on_tool_call=self.on_tool_call)
             self.done.emit(text)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -59,13 +63,14 @@ def _md_to_html(text: str) -> str:
     for line in esc.split("\n"):
         if line.strip().startswith("```"):
             out.append("</pre>" if in_code else
-                       "<pre style='background:#16181b;padding:6px;border-radius:6px;'>")
+                       f"<pre style='background:{theme.PANEL_ALT};padding:6px;border-radius:6px;'>")
             in_code = not in_code
             continue
         if not in_code:
             import re
             line = re.sub(r"`([^`]+)`",
-                          r"<code style='background:#16181b;padding:1px 4px;border-radius:3px;'>\1</code>",
+                          rf"<code style='background:{theme.PANEL_ALT};padding:1px 4px;"
+                          r"border-radius:3px;'>\1</code>",
                           line)
             line = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", line)
             line = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", line)
@@ -80,11 +85,12 @@ def _md_to_html(text: str) -> str:
 class ChatPanel(QWidget):
     status = Signal(str)
 
-    def __init__(self, registry, settings, get_adapter, parent=None):
+    def __init__(self, registry, settings, get_adapter, agent=None, parent=None):
         super().__init__(parent)
         self.registry = registry
         self.settings = settings
         self.get_adapter = get_adapter
+        self.agent = agent
         self.messages: list[ChatMessage] = []
         self.pending_attachments: list[str] = []
         self.system_prompt = str(settings.get("chat/system", ""))
@@ -106,6 +112,19 @@ class ChatPanel(QWidget):
         top.addWidget(sys_btn)
         lay.addLayout(top)
 
+        if self.agent is not None:
+            arow = QHBoxLayout()
+            self.agent_mode = QCheckBox("🤖 Agent Mode - let the AI take actions in the app")
+            self.agent_mode.setChecked(bool(settings.get("chat/agent_mode", False)))
+            self.agent_mode.setToolTip(
+                "When on, the AI can call tools to add/adjust clips, queue generations, etc. "
+                "Every change it makes still goes through the same confirm dialog and is undoable.")
+            self.agent_mode.toggled.connect(lambda on: settings.set("chat/agent_mode", on))
+            arow.addWidget(self.agent_mode, 1)
+            lay.addLayout(arow)
+        else:
+            self.agent_mode = None
+
         trow = QHBoxLayout()
         trow.addWidget(QLabel("Temp"))
         self.temp = QSlider(Qt.Orientation.Horizontal)
@@ -115,24 +134,32 @@ class ChatPanel(QWidget):
         new_btn = QPushButton("🆕")
         new_btn.setToolTip("New conversation")
         new_btn.setFixedWidth(32)
+        new_btn.setAccessibleName("New conversation")
         new_btn.clicked.connect(self.new_chat)
         save_btn = QPushButton("💾")
         save_btn.setToolTip("Save conversation")
         save_btn.setFixedWidth(32)
+        save_btn.setAccessibleName("Save conversation")
         save_btn.clicked.connect(self.save_chat)
         load_btn = QPushButton("📂")
         load_btn.setToolTip("Load conversation")
         load_btn.setFixedWidth(32)
+        load_btn.setAccessibleName("Load conversation")
         load_btn.clicked.connect(self.load_chat)
+        copy_btn = QPushButton("⧉")
+        copy_btn.setToolTip("Copy last response")
+        copy_btn.setFixedWidth(32)
+        copy_btn.setAccessibleName("Copy last response")
+        copy_btn.clicked.connect(self._copy_last_response)
         trow.addWidget(new_btn)
         trow.addWidget(save_btn)
         trow.addWidget(load_btn)
+        trow.addWidget(copy_btn)
         lay.addLayout(trow)
 
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(True)
-        self.view.setStyleSheet("QTextBrowser{background:#1a1d20;border:1px solid #3a3f46;"
-                                "padding:6px;}")
+        self.view.setObjectName("chatView")
         lay.addWidget(self.view, 1)
 
         self.attach_label = QLabel("")
@@ -160,6 +187,18 @@ class ChatPanel(QWidget):
         self.input.installEventFilter(self)
         lay.addWidget(self.input)
 
+        # Form draft auto-recovery: debounced so we're not hitting QSettings
+        # on every keystroke, cleared once the message actually sends.
+        self._draft_timer = QTimer(self)
+        self._draft_timer.setSingleShot(True)
+        self._draft_timer.setInterval(800)
+        self._draft_timer.timeout.connect(
+            lambda: self.settings.set("chat/draft", self.input.toPlainText()))
+        self.input.textChanged.connect(self._draft_timer.start)
+        draft = str(self.settings.get("chat/draft", ""))
+        if draft:
+            self.input.setPlainText(draft)
+
         srow = QHBoxLayout()
         self.send_btn = accent_button("Send ➤")
         self.send_btn.clicked.connect(self.send)
@@ -170,6 +209,11 @@ class ChatPanel(QWidget):
         srow.addWidget(self.stop_btn)
         lay.addLayout(srow)
         self._render()
+
+        DropAcceptor(self, ("image", "video", "audio"),
+                    lambda paths_: [self.attach_file(p) for p in paths_],
+                    on_rejected=lambda bad: self.status.emit(
+                        f"Skipped {len(bad)} unsupported attachment(s)."))
 
     # ------------------------------------------------------------------ utils
     def eventFilter(self, obj, ev):
@@ -198,16 +242,21 @@ class ChatPanel(QWidget):
                                                         for p in self.pending_attachments))
 
     def _attach_dialog(self):
-        f, _ = QFileDialog.getOpenFileName(
-            self, "Attach media", "",
-            "Media (*.png *.jpg *.jpeg *.webp *.gif *.mp3 *.wav *.m4a *.ogg *.flac "
-            "*.mp4 *.mov *.webm)")
+        f, _ = QFileDialog.getOpenFileName(self, "Attach media", "", media_utils.MEDIA_FILTER)
         if f:
             self.attach_file(f)
 
     def _clear_attachments(self):
         self.pending_attachments = []
         self.attach_label.setText("")
+
+    def _copy_last_response(self):
+        last = next((m for m in reversed(self.messages) if m.role == "assistant"), None)
+        if last is None:
+            self.status.emit("No AI response to copy yet.")
+            return
+        QApplication.clipboard().setText(last.text)
+        self.status.emit("✓ Copied to clipboard")
 
     # ------------------------------------------------------------------ render
     def _render(self, streaming: str = ""):
@@ -256,11 +305,15 @@ class ChatPanel(QWidget):
             return
         self.messages.append(ChatMessage("user", text, list(self.pending_attachments)))
         self.input.clear()
+        self.settings.set("chat/draft", "")
         self._clear_attachments()
         self._render()
         self._stream_buf = ""
+        use_agent = bool(self.agent_mode and self.agent_mode.isChecked() and self.agent)
         self.worker = ChatWorker(adapter, model.id, list(self.messages),
-                                 self.system_prompt, self.temp.value() / 10.0)
+                                 self.system_prompt, self.temp.value() / 10.0,
+                                 tools=self.agent.tools if use_agent else None,
+                                 on_tool_call=self._on_tool_call if use_agent else None)
         self.worker.delta.connect(self._on_delta)
         self.worker.done.connect(self._on_done)
         self.worker.failed.connect(self._on_failed)
@@ -268,6 +321,17 @@ class ChatPanel(QWidget):
         self.send_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.worker.start()
+
+    def _on_tool_call(self, call):
+        """Runs on the ChatWorker (background) thread, inside the adapter's
+        tool loop. self.agent.dispatch() does its own hop to the GUI thread
+        internally (confirm dialog + undo push need to happen there) and
+        blocks until that's done, so by the time this returns the action
+        has actually happened (or been declined)."""
+        result = self.agent.dispatch(call)
+        prefix = "⚠" if result.is_error else "🔧"
+        self.status.emit(f"{prefix} {call.name}: {result.content[:120]}")
+        return result
 
     def _on_delta(self, chunk: str):
         self._stream_buf += chunk

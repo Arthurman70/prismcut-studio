@@ -37,6 +37,34 @@ def kind_of(path) -> str:
     return "other"
 
 
+_KIND_EXTS = {"image": IMAGE_EXT, "video": VIDEO_EXT, "audio": AUDIO_EXT}
+
+
+def _filter_group(label: str, exts: set) -> str:
+    return f"{label} (" + " ".join(f"*{e}" for e in sorted(exts)) + ")"
+
+
+def accepted_exts(*kinds: str) -> set:
+    """Union of extensions for the given kinds, e.g. accepted_exts('image','video')."""
+    return set().union(*(_KIND_EXTS[k] for k in kinds)) if kinds else set()
+
+
+def is_accepted(path, *kinds: str) -> bool:
+    """True if path's extension belongs to one of the given kinds
+    ('image'/'video'/'audio'). No kinds given == accept anything."""
+    if not kinds:
+        return True
+    return Path(path).suffix.lower() in accepted_exts(*kinds)
+
+
+IMAGE_FILTER = _filter_group("Images", IMAGE_EXT)
+VIDEO_FILTER = _filter_group("Video", VIDEO_EXT)
+AUDIO_FILTER = _filter_group("Audio", AUDIO_EXT)
+AV_FILTER = ";;".join([_filter_group("Audio/Video", VIDEO_EXT | AUDIO_EXT), "All files (*)"])
+MEDIA_FILTER = ";;".join([_filter_group("Media files", IMAGE_EXT | VIDEO_EXT | AUDIO_EXT),
+                          IMAGE_FILTER, VIDEO_FILTER, AUDIO_FILTER, "All files (*)"])
+
+
 def probe(path) -> dict:
     """Return {duration, width, height, has_audio, has_video} best-effort."""
     p = Path(path)

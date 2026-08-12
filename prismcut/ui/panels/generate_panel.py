@@ -12,9 +12,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
                                QVBoxLayout, QWidget)
 
+from ...core import media as media_utils
 from ...core import paths
 from ...core.registry import ModelSpec
-from ..widgets.common import ModelCombo, accent_button, label
+from ..widgets.common import DropAcceptor, ModelCombo, accent_button, label
 
 MODES = [
     ("Image", ("image_generate",), "image"),
@@ -168,6 +169,10 @@ class GeneratePanel(QWidget):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         outer.addWidget(scroll)
 
+        DropAcceptor(self, ("image",), lambda paths_: [self.add_reference(p) for p in paths_],
+                    on_rejected=lambda bad: self.status.emit(
+                        f"Only images can be used as a reference - skipped {len(bad)} file(s)."))
+
         self._mode_changed(0)
 
     # ---------------------------------------------------------------- state
@@ -200,8 +205,7 @@ class GeneratePanel(QWidget):
             self._sync_refs()
 
     def _add_ref_dialog(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Reference image", "",
-                                           "Images (*.png *.jpg *.jpeg *.webp)")
+        f, _ = QFileDialog.getOpenFileName(self, "Reference image", "", media_utils.IMAGE_FILTER)
         if f:
             self.add_reference(f)
 

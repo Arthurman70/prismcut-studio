@@ -7,11 +7,12 @@ Auth: x-goog-api-key header (easy key drop-in from https://aistudio.google.com/a
 from __future__ import annotations
 
 import base64
-from typing import Optional
+from typing import Callable, Optional
 
 from ..core import http, media
 from ..core.http import ProviderError
 from .base import Adapter, CancelFn, ChatMessage, DeltaFn, ProgressFn
+from .tools import MAX_TOOL_ITERATIONS, Tool, ToolCall, ToolResult
 
 
 class GoogleAI(Adapter):
@@ -44,11 +45,38 @@ class GoogleAI(Adapter):
     # ---------------------------------------------------------------- chat
     def chat(self, model: str, messages: list[ChatMessage], system: str = "",
              temperature: float = 0.7, on_delta: Optional[DeltaFn] = None,
-             should_cancel: Optional[CancelFn] = None) -> str:
+             should_cancel: Optional[CancelFn] = None,
+             tools: Optional[list[Tool]] = None,
+             on_tool_call: Optional[Callable[[ToolCall], ToolResult]] = None) -> str:
         body: dict = {"contents": self._contents(messages),
                       "generationConfig": {"temperature": temperature}}
         if system:
             body["system_instruction"] = {"parts": [{"text": system}]}
+
+        if tools and on_tool_call:
+            body["tools"] = [{"functionDeclarations": [
+                {"name": t.name, "description": t.description, "parameters": t.parameters}
+                for t in tools]}]
+            for _ in range(MAX_TOOL_ITERATIONS):
+                if should_cancel and should_cancel():
+                    return ""
+                data = http.request_json("POST", self._url(f"models/{model}:generateContent"),
+                                         headers=self._headers(), json_body=body)
+                cands = data.get("candidates", [])
+                parts = (cands[0].get("content") or {}).get("parts", []) if cands else []
+                calls = [p["functionCall"] for p in parts if p.get("functionCall")]
+                if not calls:
+                    return self._first_text(data)
+                body["contents"].append({"role": "model", "parts": parts})
+                response_parts = []
+                for fc in calls:
+                    call_id = fc.get("id", "")
+                    result = on_tool_call(ToolCall(call_id, fc["name"], fc.get("args") or {}))
+                    response_parts.append({"functionResponse": {
+                        "name": fc["name"], "id": call_id, "response": {"result": result.content}}})
+                body["contents"].append({"role": "user", "parts": response_parts})
+            return ""  # exhausted MAX_TOOL_ITERATIONS without a final answer
+
         if on_delta is not None:
             url = self._url(f"models/{model}:streamGenerateContent")
             full = []

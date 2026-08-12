@@ -277,6 +277,21 @@
     { "id": "black-forest-labs/flux-1.1-pro", "provider": "replicate", "label": "FLUX 1.1 Pro (via Replicate)", "caps": ["image_generate"] },
     { "id": "minimax/music-01", "provider": "replicate", "label": "MiniMax Music (via Replicate)", "caps": ["music"] },
 
+    { "id": "fal-ai/sync-lipsync/v2/pro", "provider": "fal", "label": "Sync Lipsync v2 Pro (via fal)", "caps": ["lip_sync"],
+      "notes": "Takes an EXISTING video + EXISTING audio as separate inputs and hard-syncs the mouth to the audio - not a text/image-to-video model.",
+      "params": [
+        { "name": "video_url", "label": "Source video (filled in automatically)", "type": "text", "default": "" },
+        { "name": "audio_url", "label": "Driving audio (filled in automatically)", "type": "text", "default": "" },
+        { "name": "sync_mode", "label": "Sync mode", "type": "choice", "choices": ["cut_off", "loop", "bounce"], "default": "cut_off" }
+      ] },
+    { "id": "sync/lipsync-2-pro", "provider": "replicate", "label": "Sync Lipsync 2 Pro (via Replicate)", "caps": ["lip_sync"],
+      "notes": "Takes an EXISTING video + EXISTING audio as separate inputs and hard-syncs the mouth to the audio - not a text/image-to-video model.",
+      "params": [
+        { "name": "video_url", "label": "Source video (filled in automatically)", "type": "text", "default": "" },
+        { "name": "audio_url", "label": "Driving audio (filled in automatically)", "type": "text", "default": "" },
+        { "name": "sync_mode", "label": "Sync mode", "type": "choice", "choices": ["cut_off", "loop", "bounce"], "default": "cut_off" }
+      ] },
+
     { "id": "eleven_v3", "provider": "elevenlabs", "label": "Eleven v3 (TTS)", "caps": ["tts"],
       "params": [ { "name": "voice", "label": "Voice id (see docs/voices)", "type": "text", "default": "21m00Tcm4TlvDq8ikWAM" } ] },
     { "id": "eleven_multilingual_v2", "provider": "elevenlabs", "label": "Eleven Multilingual v2 (TTS)", "caps": ["tts"],

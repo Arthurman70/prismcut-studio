@@ -47,7 +47,12 @@ class FalAI(Adapter):
         return http.request_json("GET", response_url, headers=self._auth())
 
     def _payload(self, prompt: str, params: Optional[dict], image=None) -> dict:
-        payload: dict = {"prompt": prompt}
+        payload: dict = {}
+        if prompt:
+            # Omitted (not just empty-string) when there's no real prompt -
+            # e.g. a lip-sync model call, which has nothing to do with text
+            # generation and might reject an unexpected empty field.
+            payload["prompt"] = prompt
         for k, v in (params or {}).items():
             if v in (None, "", -1):
                 continue

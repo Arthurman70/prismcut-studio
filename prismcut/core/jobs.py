@@ -27,6 +27,10 @@ class Job(QObject):
         self.error: Optional[str] = None
         self.created = time.time()
         self._cancel = threading.Event()
+        # Stashed by JobManager.submit() purely so a UI can offer "Retry"
+        # (re-submit with the exact same callbacks) without re-deriving them.
+        self.on_done: Optional[Callable] = None
+        self.on_fail: Optional[Callable] = None
 
     # Called from worker threads --------------------------------------------
     def progress(self, percent: int = -1, message: str = "") -> None:
@@ -91,6 +95,7 @@ class JobManager(QObject):
     def submit(self, title: str, fn: Callable[[Job], object], kind: str = "api",
                on_done: Optional[Callable] = None, on_fail: Optional[Callable] = None) -> Job:
         job = Job(title, fn, kind)
+        job.on_done, job.on_fail = on_done, on_fail
         self.jobs.append(job)
         for sig in (job.started, job.finished, job.failed, job.progressed):
             sig.connect(lambda *_a, **_k: self.jobsChanged.emit())

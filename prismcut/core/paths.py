@@ -61,6 +61,31 @@ def prompt_history_path() -> Path:
     return app_data_dir() / "prompt_history.json"
 
 
+def pipelines_dir() -> Path:
+    """Movie pipeline runs - saved as sibling JSON, same pattern as
+    chats_dir(), not embedded in the .pcut project file."""
+    return _sub("pipelines")
+
+
+def autosave_dir() -> Path:
+    return _sub("autosave")
+
+
+def autosave_path_for(project_path) -> Path:
+    """Stable autosave slot for a given project path - a fixed 'untitled'
+    slot for projects that have never been saved. Keyed by a hash of the
+    resolved path (not just the stem) so two same-named projects in
+    different folders never collide."""
+    import hashlib
+    if project_path:
+        resolved = str(Path(project_path).resolve())
+        key = hashlib.sha1(resolved.encode()).hexdigest()[:12]
+        stem = Path(project_path).stem
+    else:
+        key, stem = "slot", "untitled"
+    return autosave_dir() / f"{stem}_{key}.autosave.pcut"
+
+
 def unique_path(directory: Path, stem: str, ext: str) -> Path:
     """Timestamped collision-free output path, e.g. generated/veo_20260811_121500.mp4."""
     directory.mkdir(parents=True, exist_ok=True)

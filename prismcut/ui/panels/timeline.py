@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QButtonGroup, QGraphicsItem, QGraphicsLineItem,
                                QSlider, QToolButton, QVBoxLayout, QWidget)
 
 from ...core.project import Clip, Project
+from ...core.undo_commands import AddOrRemoveItemCommand, ChangePropertiesCommand
 from .. import theme
 
 TRACK_H = 52
@@ -39,7 +40,7 @@ class ClipItem(QGraphicsRectItem):
         self.setAcceptHoverEvents(True)
         self._mode = "move"          # move | trim_l | trim_r
         self._press_scene = QPointF()
-        self._orig = (clip.start, clip.duration, clip.in_point)
+        self._orig = (clip.start, clip.duration, clip.in_point, clip.track_id)
 
     # ------------------------------------------------------------------ paint
     def paint(self, p: QPainter, _opt, _widget=None):
@@ -94,7 +95,7 @@ class ClipItem(QGraphicsRectItem):
             return
         x = ev.pos().x()
         self._press_scene = ev.scenePos()
-        self._orig = (self.clip.start, self.clip.duration, self.clip.in_point)
+        self._orig = (self.clip.start, self.clip.duration, self.clip.in_point, self.clip.track_id)
         if x <= self.EDGE:
             self._mode = "trim_l"
         elif x >= self.rect().width() - self.EDGE:
@@ -159,7 +160,11 @@ class TimelineView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.setBackgroundBrush(QColor(theme.BG))
-        self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        # Rubber-band only engages when the press starts on empty scene
+        # space (Qt gives movable/selectable items first refusal on their
+        # own press events), so this is additive to the existing per-clip
+        # drag/ctrl-click-multi-select and doesn't change either.
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
 
     def drawBackground(self, p: QPainter, rect: QRectF):
         super().drawBackground(p, rect)
@@ -193,6 +198,22 @@ class TimelineView(QGraphicsView):
             ev.accept()
             return
         super().wheelEvent(ev)
+
+    def contextMenuEvent(self, ev):
+        if self.itemAt(ev.pos()) is not None:
+            return  # ClipItem.contextMenuEvent already handled it
+        menu = QMenu(self)
+        menu.addAction("＋ Add video track",
+                       lambda: (self.timeline.project.add_track("video"),
+                                self.timeline.refresh(True)))
+        menu.addAction("＋ Add audio track",
+                       lambda: (self.timeline.project.add_track("audio"),
+                                self.timeline.refresh(True)))
+        menu.addSeparator()
+        t = self.mapToScene(ev.pos()).x() / self.timeline.pps
+        menu.addAction(f"Move playhead here ({_fmt(max(0.0, t))})",
+                       lambda: self.timeline.set_playhead(max(0.0, t)))
+        menu.exec(ev.globalPos())
 
 
 class Ruler(QWidget):
@@ -246,7 +267,7 @@ class TrackHeader(QWidget):
         self.track = track
         h = TRACK_H if track.kind == "video" else AUDIO_H
         self.setFixedSize(HEADER_W, h - 1)
-        self.setStyleSheet(f"background:{theme.PANEL};border-bottom:1px solid {theme.BORDER};")
+        self.setObjectName("timelineCorner")   # shares the same look/QSS rule as the ruler corner
         lay = QHBoxLayout(self)
         lay.setContentsMargins(6, 2, 4, 2)
         chip = QLabel("🎬" if track.kind == "video" else "🎵")
@@ -271,9 +292,10 @@ class TimelineWidget(QWidget):
     effectsRequested = Signal(str)         # clip_id
     timelineChanged = Signal()
 
-    def __init__(self, project: Project, parent=None):
+    def __init__(self, project: Project, undo_stack, parent=None):
         super().__init__(parent)
         self.project = project
+        self.undo_stack = undo_stack
         self.pps = 26.0
         self.tool = "select"
         self.snap = True
@@ -332,7 +354,7 @@ class TimelineWidget(QWidget):
         head_row.setSpacing(0)
         corner = QWidget()
         corner.setFixedSize(HEADER_W, 24)
-        corner.setStyleSheet(f"background:{theme.PANEL};")
+        corner.setObjectName("timelineCorner")
         self.scene = QGraphicsScene()
         self.view = TimelineView(self.scene, self)
         self.ruler = Ruler(self)
@@ -469,72 +491,143 @@ class TimelineWidget(QWidget):
         self.view.setCursor(Qt.CursorShape.CrossCursor if tool == "razor"
                             else Qt.CursorShape.ArrowCursor)
 
-    def commit_item(self, item: ClipItem):
-        c = item.clip
-        c.start = max(0.0, item.pos().x() / self.pps)
-        tr = self.track_at_y(item.pos().y(), item.kind)
-        if tr:
-            c.track_id = tr.id
+    def _undo_refresh(self):
         self.project.dirty = True
         self.refresh()
         self.timelineChanged.emit()
 
+    def commit_item(self, item: ClipItem):
+        c = item.clip
+        start0, dur0, in0, track0 = item._orig
+        c.start = max(0.0, item.pos().x() / self.pps)
+        tr = self.track_at_y(item.pos().y(), item.kind)
+        if tr:
+            c.track_id = tr.id
+        before = {"start": start0, "duration": dur0, "in_point": in0, "track_id": track0}
+        after = {"start": c.start, "duration": c.duration, "in_point": c.in_point,
+                "track_id": c.track_id}
+        if before != after:
+            self.undo_stack.push(ChangePropertiesCommand(
+                f"Move/trim {c.label or 'clip'}", c, before, after, self._undo_refresh))
+        else:
+            self._undo_refresh()
+
     def razor_at(self, clip_id: str, t: float):
-        if self.project.split_clip(clip_id, t):
-            self.refresh()
-            self.timelineChanged.emit()
+        c = self.project.clips.get(clip_id)
+        if not c:
+            return
+        before = {"duration": c.duration, "fade_out": c.fade_out}
+        right = self.project.split_clip(clip_id, t)
+        if not right:
+            return
+        after = {"duration": c.duration, "fade_out": c.fade_out}
+        self.undo_stack.beginMacro(f"Razor {c.label or 'clip'}")
+        self.undo_stack.push(ChangePropertiesCommand("Trim", c, before, after, self._undo_refresh))
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            "Split", add=True,
+            insert=lambda: self.project.clips.__setitem__(right.id, right),
+            remove=lambda: self.project.clips.pop(right.id, None),
+            refresh=self._undo_refresh))
+        self.undo_stack.endMacro()
 
     def duplicate_clip(self, clip_id: str):
         c = self.project.clips.get(clip_id)
-        if c:
-            nc = self.project.add_clip(c.media_id, c.track_id, c.end, c.duration)
-            if nc:
-                nc.in_point, nc.gain_db, nc.effects = c.in_point, c.gain_db, dict(c.effects)
-            self.refresh()
-            self.timelineChanged.emit()
+        if not c:
+            return
+        nc = self.project.add_clip(c.media_id, c.track_id, c.end, c.duration)
+        if not nc:
+            return
+        nc.in_point, nc.gain_db, nc.effects = c.in_point, c.gain_db, dict(c.effects)
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            f"Duplicate {c.label or 'clip'}", add=True,
+            insert=lambda: self.project.clips.__setitem__(nc.id, nc),
+            remove=lambda: self.project.clips.pop(nc.id, None),
+            refresh=self._undo_refresh))
 
     def toggle_mute(self, clip_id: str):
         c = self.project.clips.get(clip_id)
-        if c:
-            c.muted = not c.muted
-            self.refresh()
-            self.timelineChanged.emit()
+        if not c:
+            return
+        before, after = {"muted": c.muted}, {"muted": not c.muted}
+        self.undo_stack.push(ChangePropertiesCommand(
+            f"{'Mute' if after['muted'] else 'Unmute'} {c.label or 'clip'}",
+            c, before, after, self._undo_refresh))
 
     def delete_clip(self, clip_id: str):
-        self.project.remove_clip(clip_id)
-        self.refresh()
+        c = self.project.clips.get(clip_id)
+        if not c:
+            return
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            f"Delete {c.label or 'clip'}", add=False,
+            insert=lambda: self.project.clips.__setitem__(c.id, c),
+            remove=lambda: self.project.clips.pop(c.id, None),
+            refresh=self._undo_refresh))
         self.selectionChanged.emit(None)
-        self.timelineChanged.emit()
 
     def delete_selected(self):
-        for item in list(self.scene.selectedItems()):
-            if isinstance(item, ClipItem):
-                self.project.remove_clip(item.clip.id)
-        self.refresh()
+        clips = [item.clip for item in self.scene.selectedItems() if isinstance(item, ClipItem)]
+        if not clips:
+            return
+        text = (f"Delete {clips[0].label or 'clip'}" if len(clips) == 1
+               else f"Delete {len(clips)} clips")
+        self.undo_stack.beginMacro(text)
+        for c in clips:
+            self.undo_stack.push(AddOrRemoveItemCommand(
+                f"Delete {c.label or 'clip'}", add=False,
+                insert=lambda c=c: self.project.clips.__setitem__(c.id, c),
+                remove=lambda c=c: self.project.clips.pop(c.id, None),
+                refresh=self._undo_refresh))
+        self.undo_stack.endMacro()
         self.selectionChanged.emit(None)
-        self.timelineChanged.emit()
 
     def keyPressEvent(self, ev):
+        step = 1.0 if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1.0 / self.project.fps
         if ev.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.delete_selected()
         elif ev.key() == Qt.Key.Key_Space:
             self.toggle_preview()
+        elif ev.key() == Qt.Key.Key_Left:
+            self.set_playhead(self.playhead_time - step)
+        elif ev.key() == Qt.Key.Key_Right:
+            self.set_playhead(self.playhead_time + step)
+        elif ev.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal) and \
+                ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoom_steps(1)
+        elif ev.key() == Qt.Key.Key_Minus and ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoom_steps(-1)
         else:
             super().keyPressEvent(ev)
 
-    def add_media_at_playhead(self, media_id: str):
+    def add_media_at_playhead(self, media_id: str, track_id: str = "",
+                              start: float | None = None, duration: float | None = None):
+        """track_id/start/duration are optional overrides for callers that
+        know exactly where a clip belongs (the movie pipeline, Agent Mode's
+        add_media_to_timeline tool) - the bare single-arg call (every
+        existing caller) keeps its old behavior: first matching track,
+        insert at the current playhead, default duration."""
         item = self.project.media.get(media_id)
         if not item:
-            return
-        if item.kind == "audio":
-            tracks = self.project.audio_tracks()
+            return None
+        if track_id:
+            tr = self.project.track(track_id)
+            if not tr:
+                return None
         else:
-            tracks = list(reversed(self.project.video_tracks()))  # V1 first
-        if not tracks:
-            return
-        self.project.add_clip(media_id, tracks[0].id, self.playhead_time)
-        self.refresh()
-        self.timelineChanged.emit()
+            tracks = (self.project.audio_tracks() if item.kind == "audio"
+                     else list(reversed(self.project.video_tracks())))  # V1 first
+            if not tracks:
+                return None
+            tr = tracks[0]
+        t = self.playhead_time if start is None else start
+        clip = self.project.add_clip(media_id, tr.id, t, duration)
+        if not clip:
+            return None
+        self.undo_stack.push(AddOrRemoveItemCommand(
+            f"Add {item.label or 'media'} to timeline", add=True,
+            insert=lambda: self.project.clips.__setitem__(clip.id, clip),
+            remove=lambda: self.project.clips.pop(clip.id, None),
+            refresh=self._undo_refresh))
+        return clip
 
     # ------------------------------------------------------------ selection
     def _sel_changed(self):

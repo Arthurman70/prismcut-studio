@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from ...core.registry import CAPS, Registry
-from ..widgets.common import label
+from ..widgets.common import confirm_destructive, label
 
 PARAM_HELP = ('[{"name":"duration","label":"Duration (s)","type":"int","min":1,'
               '"max":15,"default":6}]  - types: int, float, choice, bool, text')
@@ -92,9 +92,10 @@ class ModelEditDialog(QDialog):
 
 
 class ModelManagerDialog(QDialog):
-    def __init__(self, registry: Registry, parent=None):
+    def __init__(self, registry: Registry, settings, parent=None):
         super().__init__(parent)
         self.registry = registry
+        self.settings = settings
         self.setWindowTitle("Model Manager")
         self.resize(780, 560)
         lay = QVBoxLayout(self)
@@ -180,8 +181,12 @@ class ModelManagerDialog(QDialog):
     def _remove(self):
         m = self._selected()
         if m and m.user:
-            self.registry.remove_user_model(m.provider, m.id)
-            self.refresh()
+            if confirm_destructive(self, self.settings, "remove_custom_model",
+                                   "Remove custom model",
+                                   f"Remove the custom model “{m.display}”? "
+                                   "This can't be undone from here.", "Remove"):
+                self.registry.remove_user_model(m.provider, m.id)
+                self.refresh()
         elif m:
             QMessageBox.information(self, "Built-in model",
                                     "Built-in models can be hidden, not removed. "

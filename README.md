@@ -66,7 +66,7 @@ GPT omni line; anything else is one Model Manager entry away.
 ## Quick start (from source)
 
 ```bash
-git clone https://github.com/YOURNAME/prismcut-studio
+git clone https://github.com/Arthurman70/prismcut-studio
 cd prismcut-studio
 python -m pip install -r requirements.txt
 python -m prismcut
@@ -86,7 +86,11 @@ variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`,
 
 > 🔒 Keys are stored locally (OS keyring when available, else app settings,
 > obfuscated not encrypted) and are only ever sent to that provider's own API.
-> The app makes no other network calls. It's open source — audit `providers/`.
+> The only other network call the app makes is an optional update check
+> against GitHub's public Releases API (**Help ▸ Check for Updates…**, or
+> automatically at most once every 24h if left enabled) — no personal data
+> is sent, and it can be turned off in the same menu. It's open source —
+> audit `providers/` and `core/updater.py`.
 
 ## Windows .exe
 

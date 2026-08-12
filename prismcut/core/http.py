@@ -9,7 +9,7 @@ import base64
 import json
 import mimetypes
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import requests
 
@@ -100,15 +100,24 @@ def stream_sse(method: str, url: str, *, headers=None, json_body=None, params=No
         resp.close()
 
 
-def download(url: str, dest: Path, *, headers=None, params=None, timeout: int = 600) -> Path:
+def download(url: str, dest: Path, *, headers=None, params=None, timeout: int = 600,
+            on_chunk: Optional[Callable[[int, int], None]] = None) -> Path:
+    """on_chunk(bytes_so_far, total_bytes) - total_bytes is 0 if the server
+    didn't send Content-Length (callers should treat that as unknown/
+    indeterminate, same convention Job.progress() already uses for -1)."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     with requests.get(url, headers=headers, params=params, timeout=timeout, stream=True) as resp:
         _raise_for(resp)
+        total = int(resp.headers.get("Content-Length") or 0)
+        written = 0
         with open(dest, "wb") as fh:
             for chunk in resp.iter_content(chunk_size=1 << 16):
                 if chunk:
                     fh.write(chunk)
+                    written += len(chunk)
+                    if on_chunk:
+                        on_chunk(written, total)
     return dest
 
 

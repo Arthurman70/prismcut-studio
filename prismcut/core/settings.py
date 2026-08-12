@@ -93,3 +93,17 @@ class Settings:
 
     def set_default_model(self, role: str, key: str) -> None:
         self.set(f"defaults/{role}", key)
+
+    # ------------------------------------------------------- recent/MRU lists
+    def recent(self, key: str, limit: int = 10) -> list[str]:
+        raw = self.q.value(f"recent/{key}")
+        items = list(raw) if isinstance(raw, list) else []
+        return [str(i) for i in items][:limit]
+
+    def add_recent(self, key: str, value: str, limit: int = 10) -> None:
+        items = [i for i in self.recent(key, limit=1000) if i != value]
+        items.insert(0, value)
+        self.set(f"recent/{key}", items[:limit])
+
+    def clear_recent(self, key: str) -> None:
+        self.set(f"recent/{key}", [])

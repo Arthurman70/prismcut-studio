@@ -30,10 +30,11 @@ FORMATS = [
 
 
 class ExportDialog(QDialog):
-    def __init__(self, project: Project, jobs, parent=None):
+    def __init__(self, project: Project, jobs, settings, parent=None):
         super().__init__(parent)
         self.project = project
         self.jobs = jobs
+        self.settings = settings
         self.setWindowTitle("Export timeline")
         self.resize(520, 340)
         form = QFormLayout(self)
@@ -46,15 +47,21 @@ class ExportDialog(QDialog):
         self.preset = QComboBox()
         for name, _w, _h in PRESETS:
             self.preset.addItem(name)
+        self.preset.setCurrentIndex(min(int(settings.get("export/preset", 0) or 0),
+                                        len(PRESETS) - 1))
         self.fmt = QComboBox()
         for name, _key, _ext in FORMATS:
             self.fmt.addItem(name)
+        self.fmt.setCurrentIndex(min(int(settings.get("export/format", 0) or 0),
+                                     len(FORMATS) - 1))
         self.fmt.currentIndexChanged.connect(self._fmt_changed)
         self.fps = QSpinBox()
         self.fps.setRange(10, 60)
         self.fps.setValue(project.fps)
         self.quality = SliderSpin(14, 32, 20)
-        self.out_edit = QLineEdit(str(Path.home() / "prismcut_export.mp4"))
+        default_dir = str(settings.get("export/last_dir", "") or Path.home())
+        _fn, _key, default_ext = FORMATS[self.fmt.currentIndex()]
+        self.out_edit = QLineEdit(str(Path(default_dir) / f"prismcut_export{default_ext}"))
         browse = QPushButton("…")
         browse.setFixedWidth(34)
         browse.clicked.connect(self._browse)
@@ -101,4 +108,7 @@ class ExportDialog(QDialog):
             return run_render(project, opts, job)
 
         self.jobs.submit(f"Render → {out.name}", work, kind="render")
+        self.settings.set("export/preset", self.preset.currentIndex())
+        self.settings.set("export/format", self.fmt.currentIndex())
+        self.settings.set("export/last_dir", str(out.parent))
         self.accept()
