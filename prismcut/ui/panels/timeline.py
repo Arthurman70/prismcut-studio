@@ -210,12 +210,8 @@ class TimelineView(QGraphicsView):
         if self.itemAt(ev.pos()) is not None:
             return  # ClipItem.contextMenuEvent already handled it
         menu = QMenu(self)
-        menu.addAction("＋ Add video track",
-                       lambda: (self.timeline.project.add_track("video"),
-                                self.timeline.refresh(True)))
-        menu.addAction("＋ Add audio track",
-                       lambda: (self.timeline.project.add_track("audio"),
-                                self.timeline.refresh(True)))
+        menu.addAction("＋ Add video track", lambda: self.timeline._add_track("video"))
+        menu.addAction("＋ Add audio track", lambda: self.timeline._add_track("audio"))
         menu.addSeparator()
         t = self.mapToScene(ev.pos()).x() / self.timeline.pps
         menu.addAction(f"Move playhead here ({_fmt(max(0.0, t))})",
@@ -287,9 +283,20 @@ class TrackHeader(QWidget):
             b.setChecked(getattr(track, attr))
             b.setFixedSize(22, 20)
             b.setToolTip(tip)
-            b.toggled.connect(lambda on, a=attr: (setattr(track, a, on),
-                                                  timeline.timelineChanged.emit(),
-                                                  timeline.view.viewport().update()))
+
+            def toggle(on, a=attr):
+                def refresh():
+                    timeline.timelineChanged.emit()
+                    timeline.view.viewport().update()
+                # Was a raw setattr with no undo entry - the identical
+                # action from the Audio Lab mixer (TrackStrip._toggle_attr)
+                # was already correctly undoable, so this was silently
+                # non-reversible only depending on which panel you clicked.
+                timeline.undo_stack.push(ChangePropertiesCommand(
+                    f"{'Mute' if a == 'mute' else 'Solo'} {track.name}",
+                    track, {a: not on}, {a: on}, refresh))
+
+            b.toggled.connect(toggle)
             lay.addWidget(b)
 
 
@@ -300,10 +307,18 @@ class TimelineWidget(QWidget):
     timelineChanged = Signal()
     regenerateSceneRequested = Signal(str, str)   # pipeline_id, scene_id
 
-    def __init__(self, project: Project, undo_stack, parent=None):
+    def __init__(self, project: Project, undo_stack, parent=None, on_add_track=None):
         super().__init__(parent)
         self.project = project
         self.undo_stack = undo_stack
+        # MainWindow.add_track() is the one undoable track-creation
+        # primitive (also used by Agent Mode's create_track tool) - wired
+        # in here so the Timeline's own toolbar/context-menu "Add track"
+        # controls go through it too instead of mutating the project
+        # directly with no undo entry. Falls back to a non-undoable direct
+        # add only if never wired (e.g. a test constructing this in
+        # isolation), so the widget still works standalone.
+        self.on_add_track = on_add_track
         self.pps = 26.0
         self.tool = "select"
         self.snap = True
@@ -338,9 +353,9 @@ class TimelineWidget(QWidget):
         bar.addWidget(del_btn)
         bar.addSpacing(10)
         addv = QToolButton(text="＋V track")
-        addv.clicked.connect(lambda: (self.project.add_track("video"), self.refresh(True)))
+        addv.clicked.connect(lambda: self._add_track("video"))
         adda = QToolButton(text="＋A track")
-        adda.clicked.connect(lambda: (self.project.add_track("audio"), self.refresh(True)))
+        adda.clicked.connect(lambda: self._add_track("audio"))
         bar.addWidget(addv)
         bar.addWidget(adda)
         bar.addStretch(1)
@@ -605,6 +620,13 @@ class TimelineWidget(QWidget):
             self.zoom_steps(-1)
         else:
             super().keyPressEvent(ev)
+
+    def _add_track(self, kind: str) -> None:
+        if self.on_add_track:
+            self.on_add_track(kind)
+        else:
+            self.project.add_track(kind)
+            self.refresh(True)
 
     def add_media_at_playhead(self, media_id: str, track_id: str = "",
                               start: float | None = None, duration: float | None = None,

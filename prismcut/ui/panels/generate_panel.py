@@ -49,7 +49,7 @@ class ParamForm(QWidget):
             name = p["name"]
             if t == "int":
                 w = QSpinBox()
-                w.setRange(int(p.get("min", -1)), int(p.get("max", 1 << 31 - 1)))
+                w.setRange(int(p.get("min", -1)), int(p.get("max", (1 << 31) - 1)))
                 w.setValue(int(overrides.get(name, p.get("default", 0))))
             elif t == "float":
                 w = QDoubleSpinBox()

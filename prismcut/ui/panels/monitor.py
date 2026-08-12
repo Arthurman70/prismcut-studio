@@ -251,6 +251,13 @@ class ProjectMonitor(MonitorBase):
                 self.show_media(item.path)
                 self._preview_media_id = item.id
             self.seek_seconds(offset)
+        if self.player:
+            # A video clip whose audio was auto-split onto a companion clip
+            # (Clip.strip_audio) must not ALSO play its own embedded audio
+            # here - otherwise it plays twice, once from this primary
+            # player and once from the second player mixing in the split
+            # companion via _sync_audio_track below.
+            self.audio_out.setMuted(bool(clip and clip.strip_audio))
         self._sync_audio_track(t)
 
     def _sync_audio_track(self, t: float) -> None:

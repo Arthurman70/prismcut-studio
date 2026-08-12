@@ -41,7 +41,6 @@ class EffectsPanel(QWidget):
             lay.addWidget(QLabel(name))
             s = SliderSpin(lo, hi, default, decimals=decimals)
             s.valueChanged.connect(self._changed)
-            s.slider.sliderPressed.connect(self._begin_gesture)
             s.slider.sliderReleased.connect(self._commit_gesture)
             s.spin.editingFinished.connect(self._commit_gesture)
             self.sliders[key] = s
@@ -72,6 +71,11 @@ class EffectsPanel(QWidget):
             s.setEnabled(on)
 
     def show_clip(self, clip_id: str | None):
+        # Switching the selected clip mid-gesture (e.g. clicking a different
+        # clip on the timeline before releasing the slider/committing a
+        # spinbox edit) must not let a stale before-snapshot from the OLD
+        # clip leak into a diff computed against the NEW clip's effects.
+        self._gesture_before = None
         self.clip_id = clip_id
         clip = self.project.clips.get(clip_id) if clip_id else None
         if not clip:
@@ -89,21 +93,25 @@ class EffectsPanel(QWidget):
     def _changed(self, *_a):
         """Live-updates clip.effects on every tick for immediate visual
         feedback (unchanged from before) - undo commands are pushed
-        separately, once per gesture, by _commit_gesture()."""
+        separately, once per gesture, by _commit_gesture(). Lazily snapshots
+        the pre-gesture state on whichever interaction happens first
+        (slider drag OR spinbox edit) instead of only ever priming on
+        sliderPressed - a spinbox-only edit (typing a value, or clicking
+        its arrows, without ever touching the slider handle) used to leave
+        _gesture_before permanently None, so _commit_gesture silently
+        skipped pushing an undo entry for it."""
         if self._loading or not self.clip_id:
             return
         clip = self.project.clips.get(self.clip_id)
         if not clip:
             return
+        if self._gesture_before is None:
+            self._gesture_before = dict(clip.effects)
         defaults = {k: d for k, _n, _lo, _hi, d, _dec in EFFECTS}
         clip.effects = {k: s.value() for k, s in self.sliders.items()
                         if abs(s.value() - defaults[k]) > 1e-9}
         self.project.dirty = True
         self.effectsChanged.emit()
-
-    def _begin_gesture(self):
-        clip = self.project.clips.get(self.clip_id) if self.clip_id else None
-        self._gesture_before = dict(clip.effects) if clip else None
 
     def _commit_gesture(self):
         clip = self.project.clips.get(self.clip_id) if self.clip_id else None

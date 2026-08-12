@@ -309,10 +309,18 @@ class AudioPanel(QWidget):
             if mean_db is None:
                 self.status.emit("Could not measure loudness (is ffmpeg installed?)")
                 return
-            clip.gain_db = max(-60.0, min(12.0, -16.0 - mean_db))
-            self.show_clip(clip.id)
-            self.timelineChanged.emit()
-            self.status.emit(f"Normalized: mean {mean_db:.1f} dB → gain {clip.gain_db:+.1f} dB")
+            new_gain = max(-60.0, min(12.0, -16.0 - mean_db))
+
+            def refresh():
+                self.show_clip(clip.id)
+                self.timelineChanged.emit()
+
+            # Was a direct clip.gain_db = ... with no undo entry, unlike
+            # every other gain/fade edit in this panel (_commit_clip_gesture).
+            self.undo_stack.push(ChangePropertiesCommand(
+                f"Normalize {clip.label or 'clip'}", clip,
+                {"gain_db": clip.gain_db}, {"gain_db": new_gain}, refresh))
+            self.status.emit(f"Normalized: mean {mean_db:.1f} dB → gain {new_gain:+.1f} dB")
 
         self.jobs.submit("Normalize audio", work, on_done=done,
                          on_fail=lambda m: self.status.emit(f"Normalize failed: {m}"))

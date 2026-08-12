@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -35,11 +36,37 @@ def _esc(v: float) -> str:
     return f"{v:.4f}".rstrip("0").rstrip(".")
 
 
+def _clip_speed(c: Clip) -> float:
+    return float((c.effects or {}).get("speed", 1.0) or 1.0)
+
+
+def _source_trim_duration(c: Clip) -> float:
+    """How much SOURCE material to read for this clip - scales with speed
+    so that after setpts/atempo retiming, the OUTPUT exactly fills the
+    clip's fixed timeline duration, instead of a sped-up clip freezing on
+    its last frame for the remainder of its slot (only half the source was
+    read) or a slowed-down clip getting cut off by the overlay window
+    before its retimed content finishes playing."""
+    return c.duration * _clip_speed(c)
+
+
+def _atempo_chain(speed: float) -> list[str]:
+    """ffmpeg's atempo filter only accepts 0.5-2.0 per instance - chain two
+    stages to cover the full 0.25x-4.0x range the Effects panel's Speed
+    slider actually offers (each stage's factor is likewise 0.5-2.0, since
+    speed is clamped to that same [0.25, 4.0] range by the slider)."""
+    if 0.5 <= speed <= 2.0:
+        return [f"atempo={speed:.4f}"]
+    first = 2.0 if speed > 2.0 else 0.5
+    second = speed / first
+    return [f"atempo={first:.4f}", f"atempo={second:.4f}"]
+
+
 def _clip_video_filters(c: Clip, w: int, h: int) -> str:
     fx = c.effects or {}
     chain = [f"scale={w}:{h}:force_original_aspect_ratio=decrease",
              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black", "setsar=1"]
-    speed = float(fx.get("speed", 1.0) or 1.0)
+    speed = _clip_speed(c)
     eq = []
     if fx.get("brightness") not in (None, 0):
         eq.append(f"brightness={float(fx['brightness']) / 100.0:.3f}")
@@ -66,16 +93,20 @@ def _clip_video_filters(c: Clip, w: int, h: int) -> str:
     return ",".join(chain)
 
 
-def _clip_audio_filters(c: Clip, track_gain: float = 0.0) -> str:
-    fx = c.effects or {}
-    speed = float(fx.get("speed", 1.0) or 1.0)
+def _clip_audio_filters(c: Clip, track_gain: float = 0.0, track_pan: float = 0.0) -> str:
+    speed = _clip_speed(c)
     parts = ["aresample=48000", "aformat=sample_fmts=fltp:channel_layouts=stereo",
              "asetpts=PTS-STARTPTS"]
-    if speed != 1.0 and 0.5 <= speed <= 2.0:
-        parts.append(f"atempo={speed:.4f}")
+    if speed != 1.0:
+        parts.extend(_atempo_chain(speed))
     gain = c.gain_db + track_gain
     if gain:
         parts.append(f"volume={gain:.2f}dB")
+    if track_pan:
+        # Track.pan (-1..1) was stored by the Audio Lab's pan dial but no
+        # filter ever read it - stereotools' balance_in is ffmpeg's direct
+        # equivalent of a simple L/R pan control.
+        parts.append(f"stereotools=balance_in={max(-1.0, min(1.0, track_pan)):.3f}")
     if c.fade_in > 0:
         parts.append(f"afade=t=in:st=0:d={_esc(c.fade_in)}")
     if c.fade_out > 0:
@@ -116,14 +147,14 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
             if m.kind == "image":
                 inputs.append(["-loop", "1", "-t", _esc(c.duration), "-framerate", str(fps), "-i", src])
             else:
-                inputs.append(["-ss", _esc(c.in_point), "-t", _esc(c.duration), "-i", src])
+                inputs.append(["-ss", _esc(c.in_point), "-t", _esc(_source_trim_duration(c)), "-i", src])
             if not audio_only:
                 lbl = f"v{idx}"
                 vparts.append(f"[{idx}:v]{_clip_video_filters(c, w, h)}[{lbl}]")
                 vlabels.append((lbl, c.start, c.end))
             if m.kind == "video" and m.has_audio and not c.strip_audio and audible(track):
                 al = f"a{idx}"
-                aparts.append(f"[{idx}:a]{_clip_audio_filters(c, track.gain_db)}[{al}]")
+                aparts.append(f"[{idx}:a]{_clip_audio_filters(c, track.gain_db, track.pan)}[{al}]")
                 alabels.append(al)
             idx += 1
 
@@ -132,9 +163,9 @@ def build_command(project: Project, opts: RenderOptions) -> list[str]:
             m = project.media.get(c.media_id)
             if not m or c.muted or not audible(track):
                 continue
-            inputs.append(["-ss", _esc(c.in_point), "-t", _esc(c.duration), "-i", str(Path(m.path))])
+            inputs.append(["-ss", _esc(c.in_point), "-t", _esc(_source_trim_duration(c)), "-i", str(Path(m.path))])
             al = f"a{idx}"
-            aparts.append(f"[{idx}:a]{_clip_audio_filters(c, track.gain_db)}[{al}]")
+            aparts.append(f"[{idx}:a]{_clip_audio_filters(c, track.gain_db, track.pan)}[{al}]")
             alabels.append(al)
             idx += 1
 
@@ -227,9 +258,17 @@ def run_render(project: Project, opts: RenderOptions, job=None) -> str:
         raise RuntimeError("Timeline is empty - add some clips first.")
     cmd = build_command(project, opts)
     total = max(project.duration(), 0.1)
+    # stderr is merged into stdout (not a separate pipe) so this loop only
+    # ever has to drain one stream. Two separate pipes is the classic
+    # subprocess deadlock: if ffmpeg writes enough to stderr to fill the OS
+    # pipe buffer before finishing (uncommon codec/filter warnings, e.g.),
+    # it blocks on that write - which stalls stdout too, so this loop's
+    # readline() never returns and the cancel check below becomes
+    # unreachable. _TIME_RE simply ignores any interleaved non-progress
+    # lines, so merging the streams doesn't affect progress reporting.
     proc = subprocess.Popen(cmd + ["-progress", "pipe:1", "-nostats"],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    err_tail = b""
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    recent_lines: deque = deque(maxlen=60)
     try:
         while True:
             if job is not None and job.cancelled:
@@ -238,16 +277,17 @@ def run_render(project: Project, opts: RenderOptions, job=None) -> str:
             line = proc.stdout.readline()
             if not line:
                 break
+            recent_lines.append(line)
             m = _TIME_RE.search(line)
             if m and job is not None:
                 secs = int(m.group(1)) / 1_000_000.0
                 job.progress(min(99, int(secs / total * 100)), f"Rendering {secs:.1f}s / {total:.1f}s")
-        err_tail = proc.stderr.read() or b""
         proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
             proc.kill()
     if proc.returncode != 0:
+        err_tail = b"".join(recent_lines)
         raise RuntimeError("ffmpeg failed:\n" + err_tail.decode("utf-8", "replace")[-800:])
     if job is not None:
         job.progress(100, "Done")

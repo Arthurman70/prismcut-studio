@@ -108,11 +108,25 @@ class ExportDialog(QDialog):
         opts = RenderOptions(width=w, height=h, fps=self.fps.value(), fmt=key,
                              crf=int(self.quality.value()), out_path=str(out))
         project = self.project
+        # This dialog closes itself right after submitting (below), so
+        # feedback once the render actually finishes has to reach back to
+        # the main window - same self.parent() pattern update_dialog.py
+        # already uses to reach MainWindow from a modal dialog.
+        win = self.parent()
 
         def work(job):
             return run_render(project, opts, job)
 
-        self.jobs.submit(f"Render → {out.name}", work, kind="render")
+        def done(_result):
+            if win is not None:
+                win.toast(f"Exported to {out}", "success")
+
+        def fail(msg):
+            if win is not None:
+                win.toast(f"Export failed: {msg}", "error", 8000)
+
+        self.jobs.submit(f"Render → {out.name}", work, kind="render",
+                         on_done=done, on_fail=fail)
         self.settings.set("export/preset", self.preset.currentIndex())
         self.settings.set("export/format", self.fmt.currentIndex())
         self.settings.set("export/last_dir", str(out.parent))

@@ -51,6 +51,16 @@ class Settings:
         self.q.setValue(key, value)
         self.q.sync()
 
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        """QSettings can round-trip a bool as the literal string "false" or
+        "true" depending on backend/platform (most reliably reproduced
+        under QSettings.Format.IniFormat, which this app uses whenever
+        PRISMCUT_DATA_DIR is set - i.e. the test sandbox, and potentially
+        elsewhere) - bool("false") is True in Python, so a naive
+        bool(self.get(key)) can silently read a saved "off" toggle back as
+        "on". Parse the string form explicitly instead."""
+        return str(self.get(key, default)).lower() in ("true", "1")
+
     # ------------------------------------------------------------- api keys
     def get_key(self, provider: str, env_var: str = "") -> Optional[str]:
         for var in filter(None, [env_var, f"{provider.upper()}_API_KEY"]):

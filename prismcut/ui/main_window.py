@@ -74,7 +74,7 @@ class MainWindow(QMainWindow):
         self.bin = ProjectBin(self.project, self.undo_stack)
         self.clip_monitor = ClipMonitor()
         self.project_monitor = ProjectMonitor(self.project)
-        self.timeline = TimelineWidget(self.project, self.undo_stack)
+        self.timeline = TimelineWidget(self.project, self.undo_stack, on_add_track=self.add_track)
         self.effects = EffectsPanel(self.project, self.undo_stack)
         # Constructed after bin/timeline/effects (its tool handlers reach
         # into them) but its own __init__ only stores `self`, so it's safe
@@ -318,7 +318,7 @@ class MainWindow(QMainWindow):
         m_help.addSeparator()
         act(m_help, "🔄 Check for Updates…", lambda: self._check_updates(silent=False))
         auto_update_act = QAction("Automatically check for updates", self, checkable=True,
-                                  checked=bool(self.settings.get("updater/auto_check", True)))
+                                  checked=self.settings.get_bool("updater/auto_check", True))
         auto_update_act.triggered.connect(lambda on: self.settings.set("updater/auto_check", on))
         m_help.addAction(auto_update_act)
         m_help.addSeparator()
@@ -582,7 +582,7 @@ class MainWindow(QMainWindow):
         self.photo.refresh_theme()
 
     def _maybe_check_updates_on_startup(self):
-        if not bool(self.settings.get("updater/auto_check", True)):
+        if not self.settings.get_bool("updater/auto_check", True):
             return
         last = float(self.settings.get("updater/last_check_ts", 0) or 0)
         if time.time() - last < updater.CHECK_INTERVAL_SECS:

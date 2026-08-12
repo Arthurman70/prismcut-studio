@@ -115,7 +115,7 @@ class ChatPanel(QWidget):
         if self.agent is not None:
             arow = QHBoxLayout()
             self.agent_mode = QCheckBox("🤖 Agent Mode - let the AI take actions in the app")
-            self.agent_mode.setChecked(bool(settings.get("chat/agent_mode", False)))
+            self.agent_mode.setChecked(settings.get_bool("chat/agent_mode", False))
             self.agent_mode.setToolTip(
                 "When on, the AI can call tools to add/adjust clips, queue generations, etc. "
                 "Every change it makes still goes through the same confirm dialog and is undoable.")

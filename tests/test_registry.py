@@ -49,7 +49,7 @@ def test_headline_models_present(registry):
     assert registry.find("minimax", "MiniMax-H3"), "Hailuo 03 missing"
     assert registry.find("seedance", "dreamina-seedance-2-0-260128")
     assert registry.find("xai", "grok-imagine-video-1.5")
-    assert registry.find("deepseek", "deepseek-chat")
+    assert registry.find("deepseek", "deepseek-v4-flash")
 
 
 def test_kling_text_and_image_to_video_present(registry):

@@ -93,6 +93,26 @@ def test_batch_tracker_tracks_failures_but_still_fires_once_all_report_in():
     assert t.failures == ["scene 1 failed"]
 
 
+def test_batch_tracker_one_done_is_a_noop_once_already_complete():
+    """Bug fix: the Jobs panel's 'Retry' resubmits a failed job with its
+    ORIGINAL on_done/on_fail closures, which still close over this same
+    tracker - if the batch already finished (this failure was the last one
+    remaining, on_all_done() already fired), a later manual retry of that
+    one job must not drive remaining negative and re-trigger
+    batch-completion a second time."""
+    fired = []
+    t = _BatchTracker(2, lambda: fired.append(1))
+    t.one_done(False, "scene 1 failed")
+    t.one_done(False, "scene 2 failed")   # batch complete, on_all_done() fires once
+    assert fired == [1]
+    assert t.failures == ["scene 1 failed", "scene 2 failed"]
+
+    t.one_done(True)   # a stale retry of scene 2, arriving after completion
+    assert fired == [1]              # on_all_done() did NOT fire again
+    assert t.remaining == 0          # did not go negative
+    assert t.failures == ["scene 1 failed", "scene 2 failed"]   # untouched
+
+
 def test_batch_tracker_of_zero_scenes_would_need_manual_completion_check():
     # A tracker is only ever constructed with len(targets) > 0 by the
     # orchestrator (the 0-scene case is special-cased before constructing

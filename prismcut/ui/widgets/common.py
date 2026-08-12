@@ -256,7 +256,7 @@ def confirm_destructive(parent, settings, action_key: str, title: str, text: str
     OUTSIDE the undo stack (the undo stack already makes in-project deletes
     trivially reversible via Ctrl+Z)."""
     key = f"confirm/suppress/{action_key}"
-    if str(settings.get(key, False)).lower() in ("true", "1"):
+    if settings.get_bool(key, False):
         return True
     box = QMessageBox(QMessageBox.Icon.Warning, title, text,
                       QMessageBox.StandardButton.Cancel, parent)

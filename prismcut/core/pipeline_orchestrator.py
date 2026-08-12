@@ -64,6 +64,14 @@ class _BatchTracker:
         self.failures: list[str] = []
 
     def one_done(self, ok: bool, msg: str = "") -> None:
+        # Idempotent past zero: the Jobs panel's "Retry" resubmits a failed
+        # job with its ORIGINAL on_done/on_fail closures, which still close
+        # over this same tracker - if the batch already finished (this was
+        # the last one remaining, on_all_done() already fired), a later
+        # manual retry of that one job must not drive remaining negative
+        # and re-trigger batch-completion a second time.
+        if self.remaining <= 0:
+            return
         self.remaining -= 1
         if not ok:
             self.failures.append(msg)
@@ -373,7 +381,16 @@ class PipelineRun(QObject):
 
         def work(job):
             job.progress(-1, f"Scene {scene.index + 1}: audio")
-            return adapter.tts(model.id, text, "", model.default_params())
+            params = model.default_params()
+            # Every tts() adapter resolves voice from this positional arg,
+            # not from params - hardcoding "" here silently ignored
+            # whatever voice was actually configured for the model (Model
+            # Manager default or per-model override) and fell back to each
+            # provider's own hardcoded default (Kore/alloy/Wise_Woman/...)
+            # for every single scene, matching generate_panel.py's already-
+            # correct pattern instead.
+            voice = str(params.get("voice", ""))
+            return adapter.tts(model.id, text, voice, params)
 
         def done(result):
             item = self.win.bin.add_generated(str(result), {

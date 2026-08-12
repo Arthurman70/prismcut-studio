@@ -350,6 +350,38 @@ def test_project_monitor_preview_at_mixes_in_separate_audio_track_clip(win):
         mon.set_project(saved_project)
 
 
+def test_project_monitor_mutes_primary_player_for_strip_audio_clips(win):
+    """Bug fix: previewing a split video clip (Clip.strip_audio=True) used
+    to play its own embedded audio through the primary player AND its
+    split companion through the second player at the same time - doubled,
+    out-of-phase sound. The primary player must mute for such clips."""
+    from prismcut.core.project import Project
+
+    mon = win.project_monitor
+    if mon.player is None:
+        pytest.skip("QtMultimedia backend unavailable in this environment")
+    saved_project = mon.project
+    p = Project()
+    vid_item = p.add_media(__file__)
+    vid_item.kind = "video"
+    v1 = p.video_tracks()[-1]
+    normal_clip = p.add_clip(vid_item.id, v1.id, 0.0, 3.0)
+    split_clip = p.add_clip(vid_item.id, v1.id, 3.0, 3.0)
+    split_clip.strip_audio = True
+    mon.set_project(p)
+    try:
+        mon.preview_at(1.0)   # over the normal (non-split) clip
+        assert mon.audio_out.isMuted() is False
+
+        mon.preview_at(4.0)   # over the split clip
+        assert mon.audio_out.isMuted() is True
+
+        mon.preview_at(1.0)   # back to the normal clip - must unmute again
+        assert mon.audio_out.isMuted() is False
+    finally:
+        mon.set_project(saved_project)
+
+
 def test_agent_mode_toggle_exists_and_is_off_by_default(win):
     assert win.agent is not None
     assert win.chat.agent_mode is not None
@@ -875,6 +907,40 @@ def test_regenerate_video_swap_uses_the_new_videos_real_duration(win, monkeypatc
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_scene_audio_generation_uses_the_configured_voice(win):
+    """Bug fix: _generate_scene_audio used to hardcode voice="" positionally
+    regardless of the model's configured voice - every TTS adapter resolves
+    voice from that positional arg, not from params, so every scene's
+    narration silently used each provider's hardcoded fallback voice
+    instead of whatever was actually configured for the model."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = []
+
+    class CapturingTTSAdapter:
+        def tts(self, model_id, text, voice, params):
+            captured.append(voice)
+            return __file__
+
+    pipeline = MoviePipeline(name="Voice test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             audio_model="minimax::speech-02-hd")
+    pipeline.scenes = [new_scene(0)]
+    pipeline.scenes[0].narration = "Hello there."
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: CapturingTTSAdapter()
+    try:
+        win.movie.run.run_audio_batch()
+        assert _wait_until(lambda: len(captured) == 1)
+        assert captured[0] == "Wise_Woman"   # the model's registry-configured default voice
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_regenerate_current_stage_regenerates_video_when_video_already_exists(win):
     from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
 
@@ -939,6 +1005,21 @@ def test_scene_image_params_override_merges_with_model_defaults(win):
     finally:
         win.get_adapter = saved_get_adapter
         win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_param_form_int_field_default_max_is_full_int32_range(win):
+    """Bug fix: `1 << 31 - 1` parses as `1 << (31 - 1)` (2^30), not the
+    evidently-intended `(1 << 31) - 1` (2^31-1) - operator-precedence
+    bug. Harmless in practice (no real model param approaches either
+    bound) but worth pinning down."""
+    from prismcut.core.registry import ModelSpec
+    from prismcut.ui.panels.generate_panel import ParamForm
+
+    spec = ModelSpec(id="x", provider="test", params=[
+        {"name": "seed", "label": "Seed", "type": "int", "default": 0}])
+    form = ParamForm()
+    form.build(spec)
+    assert form.widgets["seed"].maximum() == (1 << 31) - 1
 
 
 def test_scene_video_params_override_merges_with_model_defaults(win):
@@ -1222,6 +1303,149 @@ def test_add_media_at_playhead_auto_splits_video_audio_and_undo_removes_both(win
         if audio_item_id:
             win.project.remove_media(audio_item_id)
         win.timeline.refresh(True)
+
+
+def test_export_dialog_wires_success_and_failure_toasts(win, monkeypatch, tmp_path):
+    """Bug fix: export used to wire zero on_done/on_fail - failure was only
+    visible as a small red label buried in the Jobs dock, and success gave
+    no feedback at all once the dialog (which closes itself immediately
+    after submitting) was already gone."""
+    import prismcut.ui.dialogs.export_dialog as export_dialog_mod
+    from prismcut.ui.dialogs.export_dialog import ExportDialog
+
+    toasts = []
+    monkeypatch.setattr(win, "toast",
+                        lambda text, kind="info", timeout_ms=5000: toasts.append((text, kind)))
+
+    out = tmp_path / "out.mp4"
+    dlg = ExportDialog(win.project, win.jobs, win.settings, win)
+    dlg.out_edit.setText(str(out))
+    monkeypatch.setattr(export_dialog_mod, "run_render", lambda project, opts, job: str(out))
+    dlg._render()
+    assert _wait_until(lambda: len(toasts) == 1)
+    assert toasts[0][1] == "success"
+    assert str(out) in toasts[0][0]
+
+    toasts.clear()
+    dlg2 = ExportDialog(win.project, win.jobs, win.settings, win)
+    dlg2.out_edit.setText(str(tmp_path / "out2.mp4"))
+
+    def fail_render(project, opts, job):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(export_dialog_mod, "run_render", fail_render)
+    dlg2._render()
+    assert _wait_until(lambda: len(toasts) == 1)
+    assert toasts[0][1] == "error"
+
+
+def test_audio_normalize_creates_undo_entry(win, monkeypatch):
+    """Bug fix: Normalize used to set clip.gain_db directly with no undo
+    entry, unlike every other gain/fade edit in this panel."""
+    from prismcut.ui.panels import audio_panel as audio_panel_mod
+
+    monkeypatch.setattr(audio_panel_mod.media_utils, "measure_loudness", lambda path: -20.0)
+    aud = win.project.add_media(__file__, group="audio")
+    aud.kind = "audio"
+    track = win.project.audio_tracks()[0]
+    clip = win.project.add_clip(aud.id, track.id, 0.0, 3.0)
+    clip.gain_db = 0.0
+    try:
+        win.audio.show_clip(clip.id)
+        # count() tracks total history, not "currently applied" - it never
+        # shrinks on undo() (only the stack's internal index moves), so
+        # comparing raw counts is unreliable on this shared, cross-test
+        # stack (a prior test's own trailing undo() can leave "redo"
+        # history that a later push then truncates away). canUndo()/undo()
+        # actually reverting the value is what matters.
+        win.audio._normalize()
+        assert _wait_until(lambda: clip.gain_db != 0.0)
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert clip.gain_db == 0.0
+    finally:
+        win.project.remove_media(aud.id)
+        win.audio.show_clip(None)
+
+
+def test_effects_panel_spinbox_only_edit_creates_undo_entry(win):
+    """Bug fix: _gesture_before was only primed by the slider's
+    sliderPressed signal, so an edit made purely through the spinbox
+    (typing a value or clicking its arrows, never touching the slider
+    handle) was applied live but silently invisible to undo."""
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    try:
+        win.effects.show_clip(clip.id)
+        brightness = win.effects.sliders["brightness"]
+
+        # Spinbox-only edit - never touches slider.sliderPressed/sliderReleased.
+        brightness.spin.setValue(42)
+        brightness.spin.editingFinished.emit()
+
+        assert clip.effects.get("brightness") == 42
+        # count() tracks total history, not "currently applied" state, and
+        # never shrinks on undo() - unreliable to compare on this shared,
+        # cross-test stack (see test_audio_normalize_creates_undo_entry).
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert clip.effects.get("brightness", 0) != 42
+    finally:
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_timeline_add_track_button_is_undoable(win):
+    """Bug fix: the Timeline panel's own toolbar/context-menu 'Add track'
+    controls used to call project.add_track() directly with no undo entry,
+    while the identical action from the app menu bar (MainWindow.add_track,
+    wired in here as TimelineWidget.on_add_track) was already correctly
+    undoable - an inconsistent, silently non-reversible action depending
+    only on which control you clicked."""
+    before_ids = {t.id for t in win.project.tracks}
+    win.timeline._add_track("video")
+    after_ids = {t.id for t in win.project.tracks}
+    new_ids = after_ids - before_ids
+    assert len(new_ids) == 1
+
+    win.undo_stack.undo()
+    assert {t.id for t in win.project.tracks} == before_ids
+
+    win.undo_stack.redo()
+    assert {t.id for t in win.project.tracks} - before_ids == new_ids
+
+    win.undo_stack.undo()   # leave shared win.project state clean for later tests
+    assert {t.id for t in win.project.tracks} == before_ids
+
+
+def test_track_header_mute_toggle_is_undoable(win):
+    """Bug fix: TrackHeader's M/S buttons used to setattr(track, ...)
+    directly with no undo entry, unlike the identical action from the
+    Audio Lab mixer (TrackStrip._toggle_attr), which was already correct."""
+    from PySide6.QtWidgets import QToolButton
+
+    from prismcut.ui.panels.timeline import TrackHeader
+
+    track = win.project.video_tracks()[-1]
+    assert track.mute is False
+    header = TrackHeader(track, win.timeline)
+    mute_btn = next(b for b in header.findChildren(QToolButton) if b.text() == "M")
+
+    mute_btn.setChecked(True)
+    assert track.mute is True
+
+    win.undo_stack.undo()
+    assert track.mute is False
+
+    win.undo_stack.redo()
+    assert track.mute is True
+
+    win.undo_stack.undo()   # leave shared win.project state clean for later tests
+    assert track.mute is False
 
 
 def test_timeline_reveal_clip_seeks_scrolls_and_selects(win):

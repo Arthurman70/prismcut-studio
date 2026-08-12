@@ -192,8 +192,8 @@
         { "name": "resolution", "label": "Resolution", "type": "choice", "choices": ["480p", "720p", "1080p"], "default": "720p" }
       ] },
 
-    { "id": "deepseek-chat", "provider": "deepseek", "label": "DeepSeek Chat (V3.x)", "caps": ["chat"] },
-    { "id": "deepseek-reasoner", "provider": "deepseek", "label": "DeepSeek Reasoner (R1)", "caps": ["chat"] },
+    { "id": "deepseek-v4-flash", "provider": "deepseek", "label": "DeepSeek V4 Flash", "caps": ["chat"] },
+    { "id": "deepseek-v4-pro", "provider": "deepseek", "label": "DeepSeek V4 Pro", "caps": ["chat"] },
 
     { "id": "MiniMax-M2", "provider": "minimax", "label": "MiniMax M2 (chat)", "caps": ["chat"] },
     { "id": "MiniMax-H3", "provider": "minimax", "label": "Hailuo 03 (MiniMax H3) - native 2K + audio", "caps": ["video_generate", "image_to_video"],
