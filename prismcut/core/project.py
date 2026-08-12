@@ -40,6 +40,10 @@ class MediaItem:
     # harmlessly since load() immediately overwrites it with a fresh check
     # regardless of whatever value was on disk.
     offline: bool = False
+    # A lower-res transcode for smoother preview scrubbing of a heavy video
+    # source (see core.media.generate_proxy()) - "" until generated.
+    # Preview-only: export always renders from `path`, never this.
+    proxy_path: str = ""
 
 
 @dataclass

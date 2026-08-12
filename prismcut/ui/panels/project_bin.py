@@ -39,6 +39,7 @@ class ProjectBin(QWidget):
     useAsReference = Signal(str)          # media_id -> generate panel reference
     transcribeRequested = Signal(str)     # media_id (audio/video)
     captionsRequested = Signal(str)       # media_id (audio/video) -> timestamped SRT captions
+    proxyRequested = Signal(str)          # media_id (video) -> generate a low-res preview proxy
     binChanged = Signal()
     status = Signal(str)
 
@@ -319,6 +320,9 @@ class ProjectBin(QWidget):
         if item.kind in ("audio", "video"):
             menu.addAction("📝 Transcribe (AI)", lambda: self.transcribeRequested.emit(mid))
             menu.addAction("🎬 Generate captions (SRT)…", lambda: self.captionsRequested.emit(mid))
+        if item.kind == "video":
+            menu.addAction("🎞 Regenerate proxy…" if item.proxy_path else "🎞 Generate proxy…",
+                           lambda: self.proxyRequested.emit(mid))
         menu.addSeparator()
         color_menu = menu.addMenu("🎨 Color label")
         for name, hexval, sq in LABEL_COLORS:

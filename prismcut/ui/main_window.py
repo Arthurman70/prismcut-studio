@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         self.bin = ProjectBin(self.project, self.undo_stack)
         self.clip_monitor = ClipMonitor()
         self.project_monitor = ProjectMonitor(self.project)
+        self.project_monitor.use_proxy = self.settings.get_bool("playback/use_proxy", True)
         self.timeline = TimelineWidget(self.project, self.undo_stack, on_add_track=self.add_track)
         self.effects = EffectsPanel(self.project, self.undo_stack)
         # Constructed after bin/timeline/effects (its tool handlers reach
@@ -199,6 +200,7 @@ class MainWindow(QMainWindow):
         self.bin.useAsReference.connect(self._media_to_reference)
         self.bin.transcribeRequested.connect(self._transcribe_media)
         self.bin.captionsRequested.connect(self._generate_captions)
+        self.bin.proxyRequested.connect(self._generate_proxy)
         # media removal cascades to clips (Project.remove_media) - keep the
         # timeline's visuals in sync rather than showing stale clip items
         self.bin.binChanged.connect(lambda: self.timeline.refresh())
@@ -316,6 +318,12 @@ class MainWindow(QMainWindow):
             density_group.addAction(a)
             m_density.addAction(a)
 
+        m_view.addSeparator()
+        use_proxy_act = QAction("Use proxy media for playback", self, checkable=True,
+                                checked=self.settings.get_bool("playback/use_proxy", True))
+        use_proxy_act.triggered.connect(self._set_use_proxy)
+        m_view.addAction(use_proxy_act)
+
         m_help = mb.addMenu("&Help")
         act(m_help, "⌨ Keyboard shortcuts…", self._show_shortcuts, "?", "Help")
         m_help.addSeparator()
@@ -341,7 +349,9 @@ class MainWindow(QMainWindow):
         if item.kind == "title":
             self.clip_monitor.show_title(item.meta, self.project.height)
         else:
-            self.clip_monitor.show_media(item.path)
+            use_proxy = self.settings.get_bool("playback/use_proxy", True)
+            path = item.proxy_path if use_proxy and item.proxy_path else item.path
+            self.clip_monitor.show_media(path)
 
     def _open_in_studio(self, media_id: str):
         item = self.project.media.get(media_id)
@@ -434,6 +444,29 @@ class MainWindow(QMainWindow):
 
         self.jobs.submit(f"Generate captions for {Path(path).name}", work, on_done=done,
                          on_fail=lambda m: self.toast(f"Caption generation failed: {m}",
+                                                      "error", 8000))
+
+    def _generate_proxy(self, media_id: str):
+        item = self.project.media.get(media_id)
+        if not item:
+            return
+        path = item.path
+
+        def work(job):
+            job.progress(-1, f"Generating proxy for {Path(path).name}")
+            return media_utils.generate_proxy(path)
+
+        def done(proxy_path):
+            if not proxy_path:
+                self.toast("Proxy generation failed - is ffmpeg installed?", "error", 8000)
+                return
+            item.proxy_path = str(proxy_path)
+            self.project.dirty = True
+            self.bin.refresh()
+            self.toast("Proxy ready ✓", "success")
+
+        self.jobs.submit(f"Generate proxy for {Path(path).name}", work, on_done=done,
+                         on_fail=lambda m: self.toast(f"Proxy generation failed: {m}",
                                                       "error", 8000))
 
     def _clip_selected(self, clip_id):
@@ -617,6 +650,10 @@ class MainWindow(QMainWindow):
         theme.set_theme(QApplication.instance(), self.settings.get("ui/theme", theme.DEFAULT_THEME),
                         name)
         self._refresh_custom_paint()
+
+    def _set_use_proxy(self, on: bool):
+        self.settings.set("playback/use_proxy", on)
+        self.project_monitor.use_proxy = on
 
     def _refresh_custom_paint(self):
         """QSS repaints most widgets automatically, but content that's

@@ -208,6 +208,31 @@ def extract_audio(src, dst_ext: str = ".m4a") -> Optional[Path]:
         return None
 
 
+def generate_proxy(src, height: int = 540) -> Optional[Path]:
+    """Fast, low-res transcode of a video for smoother preview scrubbing of
+    a heavy source - never used for export, which always renders from the
+    original file untouched (see MediaItem.proxy_path). -2 rounds the
+    auto-computed width to the nearest even number, required by most video
+    codecs. Returns None on failure rather than the original path, same
+    "tell success apart from no-op" contract as extract_audio()."""
+    ff = ffmpeg_path()
+    src = Path(src)
+    if not ff or not src.exists():
+        return None
+    out = paths.cache_dir() / f"{src.stem}_proxy_{abs(hash((str(src), src.stat().st_mtime)))}.mp4"
+    if out.exists():
+        return out
+    try:
+        subprocess.run([ff, "-y", "-v", "error", "-i", str(src),
+                        "-vf", f"scale=-2:{height}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                        "-c:a", "aac", "-b:a", "96k", str(out)],
+                       capture_output=True, timeout=600)
+        return out if out.exists() else None
+    except Exception:
+        return None
+
+
 def pcm_to_wav(pcm: bytes, out_path: Path, rate: int = 24000, channels: int = 1,
                sampwidth: int = 2) -> Path:
     """Wrap raw 16-bit PCM (e.g. Gemini TTS output) into a WAV container."""

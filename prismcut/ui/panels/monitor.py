@@ -242,6 +242,10 @@ class ProjectMonitor(MonitorBase):
         self.project = project
         self._preview_media_id: str | None = None
         self._preview_audio_media_id: str | None = None
+        # Preview-only preference (export always renders from MediaItem.path,
+        # never proxy_path) - MainWindow sets this from settings at startup
+        # and again whenever the View-menu toggle changes.
+        self.use_proxy = True
         self.audio_player = None
         if HAVE_MM:
             try:
@@ -286,7 +290,8 @@ class ProjectMonitor(MonitorBase):
                 self._preview_media_id = item.id
         else:
             if self._preview_media_id != item.id:
-                self.show_media(item.path)
+                path = item.proxy_path if self.use_proxy and item.proxy_path else item.path
+                self.show_media(path)
                 self._preview_media_id = item.id
             self.seek_seconds(offset)
         if self.player:

@@ -2849,3 +2849,114 @@ def test_captions_dialog_save_cancelled_writes_nothing(win, monkeypatch, tmp_pat
         assert not list(tmp_path.glob("*.srt"))
     finally:
         dlg.close()
+
+
+# ----------------------------------------------------------------- proxy media
+
+def test_generate_proxy_sets_item_proxy_path_and_toasts(win, monkeypatch, tmp_path):
+    import prismcut.ui.main_window as main_window_mod
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+    item = win.bin.add_generated(str(video), {"mode": "video"})
+
+    proxy_out = tmp_path / "clip_proxy.mp4"
+    proxy_out.write_bytes(b"fake-proxy")
+    monkeypatch.setattr(main_window_mod.media_utils, "generate_proxy", lambda path: proxy_out)
+
+    toasts = []
+    monkeypatch.setattr(win, "toast",
+                        lambda text, kind="info", timeout_ms=5000: toasts.append((text, kind)))
+    try:
+        win._generate_proxy(item.id)
+        assert _wait_until(lambda: len(toasts) == 1)
+        assert toasts[0][1] == "success"
+        assert item.proxy_path == str(proxy_out)
+    finally:
+        win.project.remove_media(item.id)
+
+
+def test_generate_proxy_toasts_error_when_ffmpeg_unavailable(win, monkeypatch, tmp_path):
+    import prismcut.ui.main_window as main_window_mod
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+    item = win.bin.add_generated(str(video), {"mode": "video"})
+
+    monkeypatch.setattr(main_window_mod.media_utils, "generate_proxy", lambda path: None)
+
+    toasts = []
+    monkeypatch.setattr(win, "toast",
+                        lambda text, kind="info", timeout_ms=5000: toasts.append((text, kind)))
+    try:
+        win._generate_proxy(item.id)
+        assert _wait_until(lambda: len(toasts) == 1)
+        assert toasts[0][1] == "error"
+        assert item.proxy_path == ""
+    finally:
+        win.project.remove_media(item.id)
+
+
+def test_generate_proxy_toasts_on_job_failure(win, monkeypatch, tmp_path):
+    import prismcut.ui.main_window as main_window_mod
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+    item = win.bin.add_generated(str(video), {"mode": "video"})
+
+    def boom(path):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main_window_mod.media_utils, "generate_proxy", boom)
+
+    toasts = []
+    monkeypatch.setattr(win, "toast",
+                        lambda text, kind="info", timeout_ms=5000: toasts.append((text, kind)))
+    try:
+        win._generate_proxy(item.id)
+        assert _wait_until(lambda: len(toasts) == 1)
+        assert toasts[0][1] == "error"
+    finally:
+        win.project.remove_media(item.id)
+
+
+def test_use_proxy_toggle_updates_project_monitor_and_settings(win):
+    try:
+        win._set_use_proxy(False)
+        assert win.project_monitor.use_proxy is False
+        assert win.settings.get_bool("playback/use_proxy", True) is False
+        win._set_use_proxy(True)
+        assert win.project_monitor.use_proxy is True
+    finally:
+        win._set_use_proxy(True)   # leave state clean for any later tests
+
+
+def test_project_monitor_preview_at_prefers_proxy_path_when_enabled(win, monkeypatch, tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+    proxy = tmp_path / "clip_proxy.mp4"
+    proxy.write_bytes(b"fake-proxy")
+
+    item = win.bin.add_generated(str(video), {"mode": "video"})
+    item.proxy_path = str(proxy)
+    start = 100_000.0
+    track = win.project.video_tracks()[0]   # topmost - guaranteed to win resolve_at()
+    clip = win.project.add_clip(item.id, track.id, start, 3.0)
+
+    shown = []
+    monkeypatch.setattr(win.project_monitor, "show_media", lambda path: shown.append(path))
+    try:
+        win.project_monitor.use_proxy = True
+        win.project_monitor.preview_at(start + 1.0)
+        assert shown == [str(proxy)]
+
+        shown.clear()
+        win.project_monitor._preview_media_id = None
+        win.project_monitor.use_proxy = False
+        win.project_monitor.preview_at(start + 1.0)
+        assert shown == [str(video)]
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(item.id)
+        win.project_monitor.use_proxy = True
+        win.project_monitor._preview_media_id = None   # reset shared monitor state for later tests
