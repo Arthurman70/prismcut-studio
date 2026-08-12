@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QLabel, QPushButton, QScrollArea,
+                               QVBoxLayout, QWidget)
 
 from ...core.project import Project
 from ...core.undo_commands import ChangePropertiesCommand
@@ -18,6 +19,9 @@ EFFECTS = [
     ("blur", "Blur", 0, 30, 0, 1),
     ("speed", "Speed ×", 0.25, 4.0, 1.0, 2),
 ]
+
+CHROMA_KEY_COLORS = [("Green screen", "#00ff00"), ("Blue screen", "#0000ff")]
+CHROMA_KEY_EFFECT_KEYS = ("chroma_key", "chroma_key_color", "chroma_key_similarity", "chroma_key_blend")
 
 
 class EffectsPanel(QWidget):
@@ -45,6 +49,35 @@ class EffectsPanel(QWidget):
             s.spin.editingFinished.connect(self._commit_gesture)
             self.sliders[key] = s
             lay.addWidget(s)
+
+        lay.addWidget(label("Chroma key", h1=True))
+        self.chroma_check = QCheckBox("Remove background (green/blue screen)")
+        # Unlike the sliders (drag = _changed on every tick, release =
+        # _commit_gesture once), a checkbox click IS the whole gesture in
+        # one signal - both must fire here, in this order, so the mutation
+        # happens before _commit_gesture() diffs against it.
+        self.chroma_check.toggled.connect(self._chroma_changed)
+        self.chroma_check.toggled.connect(self._commit_gesture)
+        lay.addWidget(self.chroma_check)
+        self.chroma_color = QComboBox()
+        for name, _hex in CHROMA_KEY_COLORS:
+            self.chroma_color.addItem(name)
+        self.chroma_color.currentIndexChanged.connect(self._chroma_changed)
+        self.chroma_color.currentIndexChanged.connect(self._commit_gesture)
+        lay.addWidget(self.chroma_color)
+        lay.addWidget(QLabel("Similarity"))
+        self.chroma_similarity = SliderSpin(0, 100, 20, decimals=0)
+        self.chroma_similarity.valueChanged.connect(self._chroma_changed)
+        self.chroma_similarity.slider.sliderReleased.connect(self._commit_gesture)
+        self.chroma_similarity.spin.editingFinished.connect(self._commit_gesture)
+        lay.addWidget(self.chroma_similarity)
+        lay.addWidget(QLabel("Edge blend"))
+        self.chroma_blend = SliderSpin(0, 100, 10, decimals=0)
+        self.chroma_blend.valueChanged.connect(self._chroma_changed)
+        self.chroma_blend.slider.sliderReleased.connect(self._commit_gesture)
+        self.chroma_blend.spin.editingFinished.connect(self._commit_gesture)
+        lay.addWidget(self.chroma_blend)
+
         reset = QPushButton("Reset all effects")
         reset.clicked.connect(self._reset)
         lay.addWidget(reset)
@@ -69,6 +102,14 @@ class EffectsPanel(QWidget):
     def _set_enabled(self, on: bool):
         for s in self.sliders.values():
             s.setEnabled(on)
+        self.chroma_check.setEnabled(on)
+        self._update_chroma_enabled()
+
+    def _update_chroma_enabled(self):
+        on = self.chroma_check.isEnabled() and self.chroma_check.isChecked()
+        self.chroma_color.setEnabled(on)
+        self.chroma_similarity.setEnabled(on)
+        self.chroma_blend.setEnabled(on)
 
     def show_clip(self, clip_id: str | None):
         # Switching the selected clip mid-gesture (e.g. clicking a different
@@ -88,7 +129,15 @@ class EffectsPanel(QWidget):
         defaults = {k: d for k, _n, _lo, _hi, d, _dec in EFFECTS}
         for key, slider in self.sliders.items():
             slider.set_value(float(clip.effects.get(key, defaults[key])))
+        self.chroma_check.setChecked(bool(clip.effects.get("chroma_key", False)))
+        color = clip.effects.get("chroma_key_color", CHROMA_KEY_COLORS[0][1])
+        color_idx = next((i for i, (_n, hexval) in enumerate(CHROMA_KEY_COLORS)
+                          if hexval == color), 0)
+        self.chroma_color.setCurrentIndex(color_idx)
+        self.chroma_similarity.set_value(float(clip.effects.get("chroma_key_similarity", 20)))
+        self.chroma_blend.set_value(float(clip.effects.get("chroma_key_blend", 10)))
         self._loading = False
+        self._update_chroma_enabled()
 
     def _changed(self, *_a):
         """Live-updates clip.effects on every tick for immediate visual
@@ -108,8 +157,33 @@ class EffectsPanel(QWidget):
         if self._gesture_before is None:
             self._gesture_before = dict(clip.effects)
         defaults = {k: d for k, _n, _lo, _hi, d, _dec in EFFECTS}
-        clip.effects = {k: s.value() for k, s in self.sliders.items()
-                        if abs(s.value() - defaults[k]) > 1e-9}
+        # Keys this method doesn't own (chroma key's, set by _chroma_changed)
+        # are preserved rather than dropped - each handler only ever
+        # rebuilds the slice of clip.effects its own widgets are
+        # responsible for.
+        fx = {k: v for k, v in clip.effects.items() if k not in self.sliders}
+        fx.update({k: s.value() for k, s in self.sliders.items()
+                  if abs(s.value() - defaults[k]) > 1e-9})
+        clip.effects = fx
+        self.project.dirty = True
+        self.effectsChanged.emit()
+
+    def _chroma_changed(self, *_a):
+        if self._loading or not self.clip_id:
+            return
+        clip = self.project.clips.get(self.clip_id)
+        if not clip:
+            return
+        self._update_chroma_enabled()
+        if self._gesture_before is None:
+            self._gesture_before = dict(clip.effects)
+        fx = {k: v for k, v in clip.effects.items() if k not in CHROMA_KEY_EFFECT_KEYS}
+        if self.chroma_check.isChecked():
+            fx["chroma_key"] = True
+            fx["chroma_key_color"] = CHROMA_KEY_COLORS[self.chroma_color.currentIndex()][1]
+            fx["chroma_key_similarity"] = self.chroma_similarity.value()
+            fx["chroma_key_blend"] = self.chroma_blend.value()
+        clip.effects = fx
         self.project.dirty = True
         self.effectsChanged.emit()
 
@@ -132,9 +206,21 @@ class EffectsPanel(QWidget):
         self._loading = True
         for k, s in self.sliders.items():
             s.set_value(defaults[k])
+        self.chroma_check.setChecked(False)
+        self.chroma_color.setCurrentIndex(0)
+        self.chroma_similarity.set_value(20)
+        self.chroma_blend.set_value(10)
         self._loading = False
+        self._update_chroma_enabled()
         self._changed()
+        self._chroma_changed()
         if clip is not None and before != clip.effects:
             self.undo_stack.push(ChangePropertiesCommand(
                 f"Reset effects · {clip.label or 'clip'}", clip,
                 {"effects": before}, {"effects": dict(clip.effects)}, self.effectsChanged.emit))
+        # Both _changed()/_chroma_changed() above prime _gesture_before but
+        # nothing calls _commit_gesture() to clear it after a Reset click
+        # (this method already pushes its own undo command instead) -
+        # leaving it dangling would corrupt the "before" snapshot of
+        # whichever slider/checkbox gesture happens next.
+        self._gesture_before = None

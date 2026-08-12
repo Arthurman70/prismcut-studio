@@ -574,3 +574,45 @@ def test_transition_works_between_a_title_and_an_image(tmp_path):
 
     assert "drawtext=" in joined   # title branch still ran for the first half of the pair
     assert "xfade=transition=fade:duration=1:offset=3" in joined
+
+
+def test_chroma_key_off_by_default(tmp_path):
+    p = make_project(tmp_path)
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "chromakey" not in joined
+    assert "despill" not in joined
+
+
+def test_chroma_key_adds_chromakey_and_despill_with_defaults(tmp_path):
+    p = make_project(tmp_path)
+    clip = next(c for c in p.clips.values() if p.track(c.track_id).kind == "video")
+    clip.effects["chroma_key"] = True
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "chromakey=color=0x00ff00:similarity=0.200:blend=0.100" in joined
+    assert "despill=type=green" in joined
+
+
+def test_chroma_key_custom_color_and_tolerance(tmp_path):
+    p = make_project(tmp_path)
+    clip = next(c for c in p.clips.values() if p.track(c.track_id).kind == "video")
+    clip.effects.update(chroma_key=True, chroma_key_color="#0000ff",
+                        chroma_key_similarity=40, chroma_key_blend=25)
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "chromakey=color=0x0000ff:similarity=0.400:blend=0.250" in joined
+    assert "despill=type=blue" in joined
+
+
+def test_chroma_key_similarity_and_blend_are_clamped(tmp_path):
+    p = make_project(tmp_path)
+    clip = next(c for c in p.clips.values() if p.track(c.track_id).kind == "video")
+    clip.effects.update(chroma_key=True, chroma_key_similarity=500, chroma_key_blend=-30)
+
+    joined = " ".join(build_command(p, RenderOptions(fmt="mp4", out_path=str(tmp_path / "out.mp4"))))
+
+    assert "similarity=1.000" in joined
+    assert "blend=0.000" in joined

@@ -1488,6 +1488,101 @@ def test_effects_panel_spinbox_only_edit_creates_undo_entry(win):
         win.effects.show_clip(None)
 
 
+def test_effects_panel_chroma_key_toggle_creates_undo_entry(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    try:
+        win.effects.show_clip(clip.id)
+
+        win.effects.chroma_check.setChecked(True)
+
+        assert clip.effects.get("chroma_key") is True
+        assert clip.effects.get("chroma_key_color") == "#00ff00"
+        assert win.undo_stack.canUndo()
+
+        win.undo_stack.undo()
+        assert "chroma_key" not in clip.effects
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_chroma_key_and_slider_effects_do_not_clobber_each_other(win):
+    """Both _changed() (sliders) and _chroma_changed() (chroma key) rebuild
+    clip.effects - each must only touch the keys it owns, or setting one
+    kind of effect after the other would silently wipe the first."""
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    try:
+        win.effects.show_clip(clip.id)
+
+        win.effects.chroma_check.setChecked(True)
+        win.effects.sliders["brightness"].spin.setValue(30)
+        win.effects.sliders["brightness"].spin.editingFinished.emit()
+
+        assert clip.effects.get("chroma_key") is True
+        assert clip.effects.get("brightness") == 30
+
+        # Now change a chroma-key parameter - the slider effect must survive.
+        win.effects.chroma_similarity.spin.setValue(55)
+        win.effects.chroma_similarity.spin.editingFinished.emit()
+
+        assert clip.effects.get("brightness") == 30
+        assert clip.effects.get("chroma_key_similarity") == 55
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_show_clip_loads_chroma_key_state(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    a = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    a.effects = {"chroma_key": True, "chroma_key_color": "#0000ff",
+                "chroma_key_similarity": 35, "chroma_key_blend": 15}
+    b = win.project.add_clip(img.id, track.id, 3.0, 2.0)
+    try:
+        win.effects.show_clip(a.id)
+        assert win.effects.chroma_check.isChecked() is True
+        assert win.effects.chroma_color.currentIndex() == 1   # Blue screen
+        assert win.effects.chroma_similarity.value() == 35
+        assert win.effects.chroma_blend.value() == 15
+
+        win.effects.show_clip(b.id)
+        assert win.effects.chroma_check.isChecked() is False
+    finally:
+        win.project.remove_clip(a.id)
+        win.project.remove_clip(b.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
+def test_effects_panel_reset_clears_chroma_key_too(win):
+    img = win.project.add_media(__file__)
+    img.kind = "image"
+    track = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, track.id, 0.0, 3.0)
+    clip.effects = {"chroma_key": True, "brightness": 40}
+    try:
+        win.effects.show_clip(clip.id)
+
+        win.effects._reset()
+
+        assert clip.effects == {}
+        assert win.effects.chroma_check.isChecked() is False
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+        win.effects.show_clip(None)
+
+
 def test_timeline_add_track_button_is_undoable(win):
     """Bug fix: the Timeline panel's own toolbar/context-menu 'Add track'
     controls used to call project.add_track() directly with no undo entry,

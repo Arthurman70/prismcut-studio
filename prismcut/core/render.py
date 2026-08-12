@@ -101,6 +101,28 @@ def _ffmpeg_color(hexval: str) -> str:
     return "0x" + (hexval or "#ffffff").lstrip("#")
 
 
+def _chroma_key_filters(fx: dict) -> list[str]:
+    """chromakey (YUV-space keying, generally cleaner than the simpler RGB
+    colorkey filter for real green/blue-screen footage) + a despill pass to
+    clean up residual key-color tinting on the subject's edges - despill's
+    type is inferred from whichever of green/blue is stronger in the key
+    color, since red-screen keying is rare enough not to warrant a third
+    branch for this v1."""
+    hexval = (fx.get("chroma_key_color") or "#00ff00").lstrip("#").ljust(6, "0")
+    try:
+        g, b = int(hexval[2:4], 16), int(hexval[4:6], 16)
+    except ValueError:
+        g, b = 255, 0
+    similarity = max(0.01, min(1.0, float(fx.get("chroma_key_similarity", 20) or 0) / 100.0))
+    blend = max(0.0, min(1.0, float(fx.get("chroma_key_blend", 10) or 0) / 100.0))
+    despill_type = "blue" if b > g else "green"
+    return [
+        f"chromakey=color={_ffmpeg_color(fx.get('chroma_key_color', '#00ff00'))}:"
+        f"similarity={similarity:.3f}:blend={blend:.3f}",
+        f"despill=type={despill_type}",
+    ]
+
+
 def _drawtext_escape(text: str) -> str:
     """Escapes a value bound for a single-quoted drawtext option - backslash
     first (so the next two substitutions don't double-escape their own
@@ -146,6 +168,8 @@ def _clip_video_filters(c: Clip, w: int, h: int, m=None, shift: Optional[float] 
         chain.append(_title_drawtext(m, w, h))
     chain += [f"scale={w}:{h}:force_original_aspect_ratio=decrease",
               f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black", "setsar=1"]
+    if fx.get("chroma_key"):
+        chain.extend(_chroma_key_filters(fx))
     speed = _clip_speed(c)
     eq = []
     if fx.get("brightness") not in (None, 0):
