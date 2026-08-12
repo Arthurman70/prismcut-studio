@@ -7,6 +7,6 @@ Forest Labs FLUX, fal.ai, Replicate, ElevenLabs, Suno gateways and any
 OpenAI-compatible endpoint.
 """
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 APP_NAME = "PrismCut Studio"
 ORG_NAME = "PrismCut"
