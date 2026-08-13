@@ -1275,6 +1275,166 @@ def test_estimate_batch_cost_sums_per_scene_with_overrides(win):
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+# --------------------------------------------------- per-scene model override
+
+def test_scene_image_model_override_resolves_a_different_provider(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = []
+
+    class FakeAdapter:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def generate_image(self, model_id, prompt, params, refs=None):
+            captured.append((self.provider, model_id))
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Image model override test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.image_model = "openai::gpt-image-2"   # override just this scene
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter(provider)
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: len(captured) == 1)
+        assert captured[0] == ("openai", "gpt-image-2")
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_image_batch_resolves_per_scene_model_override(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = []
+
+    class FakeAdapter:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def generate_image(self, model_id, prompt, params, refs=None):
+            captured.append((self.provider, model_id))
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Batch model override test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    s1, s2 = new_scene(0), new_scene(1)
+    s2.image_model = "openai::gpt-image-2"   # only this scene overrides
+    pipeline.scenes = [s1, s2]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter(provider)
+    try:
+        win.movie.run.run_image_batch()
+        assert _wait_until(lambda: len(captured) == 2, timeout=10.0)
+        assert ("google", "gemini-3.1-flash-image") in captured
+        assert ("openai", "gpt-image-2") in captured
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_video_batch_generates_sequentially_with_per_scene_model_override(win):
+    """Video's version of the sequential-image test above: proves BOTH that
+    scenes generate one at a time (never in parallel, unlike before this
+    change) AND that a scene-level video_model override resolves
+    independently per scene - one test for both coupled properties, same
+    reasoning as test_image_batch_generates_sequentially_with_reference_
+    context, since a parallel batch would let a later scene's call race
+    ahead of an earlier one's completion."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = []
+
+    class FakeVideoAdapter:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            calls.append((self.provider, model_id,
+                         sum(1 for s in pipeline.scenes if s.video.active is not None)))
+            return __file__
+
+    pipeline = MoviePipeline(name="Sequential video override test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    s1, s2, s3 = new_scene(0), new_scene(1), new_scene(2)
+    s2.video_model = "google::veo-3.1-lite-generate-preview"   # only the middle scene overrides
+    pipeline.scenes = [s1, s2, s3]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    run._ensure_tracks()
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeVideoAdapter(provider)
+    try:
+        run.run_video_batch()
+        assert _wait_until(lambda: all(s.video.active for s in pipeline.scenes), timeout=10.0)
+        # each call's "how many earlier scenes already finished" count proves
+        # strict ordering - a parallel batch could produce e.g. [0, 0, 0]
+        assert [c[2] for c in calls] == [0, 1, 2]
+        assert calls[0][:2] == ("xai", "grok-imagine-video-1.5")             # scene 1: pipeline default
+        assert calls[1][:2] == ("google", "veo-3.1-lite-generate-preview")   # scene 2: overridden
+        assert calls[2][:2] == ("xai", "grok-imagine-video-1.5")             # scene 3: back to default
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_row_model_override_rebuilds_param_form_live(win):
+    """Switching a scene's model-override combo must rebuild that stage's
+    param form against the newly selected model's own schema - otherwise
+    the form would keep showing (and let the user edit) fields for a model
+    that isn't actually the one about to be used."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Live rebuild test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    try:
+        row = win.movie._rows[scene.id]
+        assert "image_size" in row.image_param_form.widgets   # gemini-3.1-flash-image's own param
+
+        idx = row.image_model_combo.findData("openai::gpt-image-2")
+        assert idx >= 0
+        row.image_model_combo.setCurrentIndex(idx)
+
+        assert "image_size" not in row.image_param_form.widgets   # gpt-image-2 has no such param
+        assert "n" in row.image_param_form.widgets                # gpt-image-2's own param instead
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_estimate_batch_cost_resolves_per_scene_model_override(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Cost override test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    s1, s2 = new_scene(0), new_scene(1)
+    s2.image_model = "openai::gpt-image-2"   # different price than the pipeline default
+    pipeline.scenes = [s1, s2]
+    win.movie._set_pipeline(pipeline)
+    try:
+        cost = win.movie._estimate_batch_cost(pipeline.image_model, [s1, s2], "image")
+        assert cost == pytest.approx(0.045 + 0.05)   # pipeline default (s1) + s2's override
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_run_images_confirm_dialog_includes_cost_estimate(win, monkeypatch):
     import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
     from prismcut.core.pipeline import MoviePipeline, new_scene

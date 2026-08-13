@@ -19,8 +19,8 @@ from ...core import paths
 from ...core.pipeline import MoviePipeline, Scene
 from ...core.pipeline_orchestrator import PipelineRun
 from ..dialogs.new_pipeline_dialog import NewPipelineDialog
-from ..widgets.common import (STATUS_ICONS, CollapsibleSection, DropAcceptor, accent_button,
-                              confirm_destructive, label)
+from ..widgets.common import (STATUS_ICONS, CollapsibleSection, DropAcceptor, ModelCombo,
+                              accent_button, confirm_destructive, label)
 from .generate_panel import ParamForm
 
 BUSY_STATUSES = ("images_running", "video_running")
@@ -109,11 +109,14 @@ class SceneRow(QWidget):
         self.sync()
 
     def _build_details(self) -> QWidget:
-        """Reviewable/editable script + per-scene image/video param overrides
-        (Scene.image_params/video_params, layered onto the model's own
-        defaults at generation time - see pipeline_orchestrator._generate_
-        scene_image/_video). Built once per row since the pipeline's chosen
-        image/video models don't change after the movie is created."""
+        """Reviewable/editable script + per-scene model overrides
+        (Scene.image_model/video_model, "" = inherit the pipeline's own
+        choice) + per-scene image/video param overrides (Scene.image_params/
+        video_params, layered onto whichever model ends up in effect at
+        generation time - see pipeline_orchestrator._generate_scene_image/
+        _video). The param forms rebuild live when a row's model override
+        changes, since a different model can have a different params
+        schema than the pipeline default."""
         host = QWidget()
         v = QVBoxLayout(host)
         v.setContentsMargins(4, 4, 4, 4)
@@ -125,36 +128,79 @@ class SceneRow(QWidget):
         self.script_edit.setPlaceholderText("Describe what happens in this scene…")
         v.addWidget(self.script_edit)
 
-        self.image_param_form = None
-        self.video_param_form = None
         registry = self.run.win.registry
-        image_model = registry.by_key(self.run.pipeline.image_model)
-        if image_model and image_model.params:
-            v.addWidget(label("Image generation parameters", dim=True))
-            self.image_param_form = ParamForm()
-            self.image_param_form.build(image_model, self.scene.image_params)
-            v.addWidget(self.image_param_form)
+        settings = self.run.win.settings
 
-        video_model = registry.by_key(self.run.pipeline.video_model)
-        if video_model and video_model.params:
-            v.addWidget(label("Video generation parameters (length, quality, ...)", dim=True))
-            self.video_param_form = ParamForm()
-            self.video_param_form.build(video_model, self.scene.video_params)
-            v.addWidget(self.video_param_form)
+        v.addWidget(label("Image model (optional override)", dim=True))
+        self.image_model_combo = ModelCombo(registry, settings, ("image_generate",),
+                                            allow_none=True,
+                                            none_label="— Use pipeline default —")
+        self._select_override(self.image_model_combo, self.scene.image_model)
+        self.image_model_combo.currentIndexChanged.connect(self._rebuild_image_param_form)
+        v.addWidget(self.image_model_combo)
+        self.image_param_label = label("Image generation parameters", dim=True)
+        v.addWidget(self.image_param_label)
+        self.image_param_form = ParamForm()
+        v.addWidget(self.image_param_form)
+
+        v.addWidget(label("Video model (optional override)", dim=True))
+        self.video_model_combo = ModelCombo(registry, settings, ("video_generate",),
+                                            allow_none=True,
+                                            none_label="— Use pipeline default —")
+        self._select_override(self.video_model_combo, self.scene.video_model)
+        self.video_model_combo.currentIndexChanged.connect(self._rebuild_video_param_form)
+        v.addWidget(self.video_model_combo)
+        self.video_param_label = label("Video generation parameters (length, quality, ...)",
+                                       dim=True)
+        v.addWidget(self.video_param_label)
+        self.video_param_form = ParamForm()
+        v.addWidget(self.video_param_form)
+
+        self._rebuild_image_param_form()
+        self._rebuild_video_param_form()
 
         save_btn = QPushButton("💾 Save changes")
-        save_btn.setToolTip("Saves the script and any parameter overrides above - applied next "
-                            "time this scene is (re)generated.")
+        save_btn.setToolTip("Saves the script, model overrides, and any parameter overrides "
+                            "above - applied next time this scene is (re)generated.")
         save_btn.clicked.connect(self._save_details)
         v.addWidget(save_btn)
         return host
 
+    @staticmethod
+    def _select_override(combo: ModelCombo, key: str) -> None:
+        idx = combo.findData(key) if key else 0
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _effective_image_model(self):
+        return (self.image_model_combo.current_model()
+               or self.run.win.registry.by_key(self.run.pipeline.image_model))
+
+    def _effective_video_model(self):
+        return (self.video_model_combo.current_model()
+               or self.run.win.registry.by_key(self.run.pipeline.video_model))
+
+    def _rebuild_image_param_form(self, _idx: int = 0):
+        model = self._effective_image_model()
+        has_params = bool(model and model.params)
+        self.image_param_label.setVisible(has_params)
+        self.image_param_form.setVisible(has_params)
+        if has_params:
+            self.image_param_form.build(model, self.scene.image_params)
+
+    def _rebuild_video_param_form(self, _idx: int = 0):
+        model = self._effective_video_model()
+        has_params = bool(model and model.params)
+        self.video_param_label.setVisible(has_params)
+        self.video_param_form.setVisible(has_params)
+        if has_params:
+            self.video_param_form.build(model, self.scene.video_params)
+
     def _save_details(self):
         self.scene.script = self.script_edit.toPlainText()
-        if self.image_param_form is not None:
-            self.scene.image_params = self.image_param_form.values()
-        if self.video_param_form is not None:
-            self.scene.video_params = self.video_param_form.values()
+        self.scene.image_model = self.image_model_combo.current_key()
+        self.scene.video_model = self.video_model_combo.current_key()
+        self.scene.image_params = self.image_param_form.values()
+        self.scene.video_params = self.video_param_form.values()
         self.run.pipeline.save()
         self.sync()
         self.run.win.toast(f"Scene {self.scene.index + 1} changes saved.", "success")
@@ -489,17 +535,20 @@ class MoviePipelinePanel(QWidget):
                         if getattr(s, active).active is None), key=lambda s: s.index)
         return scenes if limit is None else scenes[:limit]
 
-    def _estimate_batch_cost(self, model_key: str, targets: list, stage: str) -> float | None:
+    def _estimate_batch_cost(self, pipeline_model_key: str, targets: list, stage: str) -> float | None:
         """Total estimated $ across `targets`, honoring each scene's own
-        param overrides (video length in particular varies scene-to-scene).
-        None if pricing for this model isn't known - callers should omit
-        the cost from their message entirely rather than show $0.00."""
-        model = self.registry.by_key(model_key)
-        if not model:
-            return None
+        model choice (falling back to the pipeline default, same rule the
+        orchestrator itself uses) and param overrides (video length in
+        particular varies scene-to-scene). None if pricing for any scene's
+        model isn't known - callers should omit the cost from their message
+        entirely rather than show a partial/misleading $0.00."""
+        model_attr = "image_model" if stage == "image" else "video_model"
         overrides_attr = "image_params" if stage == "image" else "video_params"
         total = 0.0
         for scene in targets:
+            model = self.registry.by_key(getattr(scene, model_attr) or pipeline_model_key)
+            if not model:
+                return None
             params = {**model.default_params(), **getattr(scene, overrides_attr)}
             cost = cost_estimator.estimate_cost(model, params)
             if cost is None:

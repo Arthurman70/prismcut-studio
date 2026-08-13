@@ -77,6 +77,12 @@ class Scene:
     lipsync: SceneHistory = field(default_factory=SceneHistory)
     use_lipsync: bool = False
     clip_ids: dict = field(default_factory=dict)   # {"video": clip_id, "audio": clip_id}
+    # "" means "use the pipeline's MoviePipeline.image_model/video_model",
+    # same inherit-by-empty-string sentinel ModelCombo(allow_none=True)
+    # already uses elsewhere (e.g. lipsync_model). Lets one scene use a
+    # different model than the rest of the movie.
+    image_model: str = ""
+    video_model: str = ""
     # Per-scene overrides layered on top of the pipeline's image/video model
     # default_params() at generation time (e.g. a shorter duration or lower
     # resolution for one specific scene) - empty means "use the model's

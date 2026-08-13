@@ -178,7 +178,6 @@ class PipelineRun(QObject):
         as well as "all remaining". Calling this again later only ever
         targets scenes still missing an image, so it doubles as "continue
         where I left off" with no separate resume path needed."""
-        model, adapter = self._adapter_for(self.pipeline.image_model)
         targets = sorted((s for s in self.pipeline.scenes if s.image.active is None),
                          key=lambda s: s.index)
         if limit is not None:
@@ -191,9 +190,9 @@ class PipelineRun(QObject):
             return
         self._set_status("images_running")
         tracker = _BatchTracker(len(targets), lambda: self._images_batch_done(on_all_done))
-        self._run_image_chain(targets, model, adapter, tracker)
+        self._run_image_chain(targets, tracker)
 
-    def _run_image_chain(self, remaining: list, model, adapter, tracker: _BatchTracker) -> None:
+    def _run_image_chain(self, remaining: list, tracker: _BatchTracker) -> None:
         """Generates scene images ONE AT A TIME, in scene order, instead of
         firing every scene's job in parallel - each scene after the first
         passes reference images from earlier scenes (see
@@ -203,14 +202,17 @@ class PipelineRun(QObject):
         knowledge of what came before. This necessarily makes the batch take
         longer wall-clock time than running everything in parallel would -
         an inherent tradeoff of the earlier-scenes-as-context requirement,
-        not an oversight."""
+        not an oversight. The model is resolved fresh per scene (scene.
+        image_model overrides the pipeline default) since two scenes in the
+        same batch can now use different models."""
         if not remaining:
             return
         scene, rest = remaining[0], remaining[1:]
+        model, adapter = self._adapter_for(scene.image_model or self.pipeline.image_model)
         refs = self._image_context_refs(scene)
 
         def advance():
-            self._run_image_chain(rest, model, adapter, tracker)
+            self._run_image_chain(rest, tracker)
 
         self._generate_scene_image(scene, model, adapter, tracker, extra_refs=refs,
                                    on_settled=advance)
@@ -244,7 +246,7 @@ class PipelineRun(QObject):
         scene = self.pipeline.scene(scene_id)
         if not scene:
             return
-        model, adapter = self._adapter_for(self.pipeline.image_model)
+        model, adapter = self._adapter_for(scene.image_model or self.pipeline.image_model)
         tracker = _BatchTracker(1, lambda: None)
         refs = self._image_context_refs(scene)
         self._generate_scene_image(scene, model, adapter, tracker, prompt_override, extra_refs=refs)
@@ -460,10 +462,14 @@ class PipelineRun(QObject):
     def run_video_batch(self, on_all_done: Optional[Callable] = None,
                         limit: Optional[int] = None) -> None:
         """See run_image_batch's docstring - same limit/continue semantics,
-        applied to the video (+ optional lip-sync) stage."""
-        plan = resolve_video_plan(self.win.registry, self.pipeline.video_model,
-                                  self.pipeline.lipsync_model)
-        video_adapter = self.win.get_adapter(plan.video_model.provider)
+        applied to the video (+ optional lip-sync) stage. Generates ONE
+        SCENE AT A TIME, like the image stage - not for the same reason
+        (generate_video() takes no reference-images list, so there's no
+        cross-scene continuity context to pass along), but so a long video
+        batch - the slowest, most expensive, most rate-limit-sensitive
+        stage - stays predictable rather than firing every scene's call at
+        once, and so a scene's moderation-retry (see _generate_scene_video)
+        settles before the next scene starts."""
         targets = sorted((s for s in self.pipeline.scenes if s.video.active is None),
                          key=lambda s: s.index)
         if limit is not None:
@@ -474,8 +480,20 @@ class PipelineRun(QObject):
             return
         self._set_status("video_running")
         tracker = _BatchTracker(len(targets), lambda: self._video_batch_done(on_all_done))
-        for scene in targets:
-            self._generate_scene_video(scene, plan, video_adapter, tracker)
+        self._run_video_chain(targets, tracker)
+
+    def _run_video_chain(self, remaining: list, tracker: _BatchTracker) -> None:
+        if not remaining:
+            return
+        scene, rest = remaining[0], remaining[1:]
+        plan = resolve_video_plan(self.win.registry, scene.video_model or self.pipeline.video_model,
+                                  self.pipeline.lipsync_model)
+        video_adapter = self.win.get_adapter(plan.video_model.provider)
+
+        def advance():
+            self._run_video_chain(rest, tracker)
+
+        self._generate_scene_video(scene, plan, video_adapter, tracker, on_settled=advance)
 
     def regenerate_scene_video(self, scene_id: str) -> None:
         """Single-scene video regenerate, bypassing the batch/gate - mirrors
@@ -488,14 +506,14 @@ class PipelineRun(QObject):
         scene = self.pipeline.scene(scene_id)
         if not scene:
             return
-        plan = resolve_video_plan(self.win.registry, self.pipeline.video_model,
+        plan = resolve_video_plan(self.win.registry, scene.video_model or self.pipeline.video_model,
                                   self.pipeline.lipsync_model)
         video_adapter = self.win.get_adapter(plan.video_model.provider)
         tracker = _BatchTracker(1, lambda: None)
         self._generate_scene_video(scene, plan, video_adapter, tracker)
 
     def _generate_scene_video(self, scene: Scene, plan: VideoPlan, video_adapter,
-                              tracker: _BatchTracker) -> None:
+                              tracker: _BatchTracker, on_settled: Optional[Callable] = None) -> None:
         video_model = plan.video_model
         img = scene.image.active
         img_item = self.win.project.media.get(img.media_id) if img else None
@@ -533,11 +551,13 @@ class PipelineRun(QObject):
                                         model=video_model.id, source="generated", created=time.time()))
             scene.last_error = ""
             if plan.lipsync_model and scene.use_lipsync:
-                self._chain_lipsync(scene, item, plan.lipsync_model, tracker)
+                self._chain_lipsync(scene, item, plan.lipsync_model, tracker, on_settled=on_settled)
             else:
                 self._swap_interim_for_final(scene, item)
                 self.sceneChanged.emit(scene.id)
                 tracker.one_done(True)
+                if on_settled:
+                    on_settled()
 
         def fail(msg):
             self.logMessage.emit(f"Scene {scene.index + 1} video failed: {msg}")
@@ -545,11 +565,14 @@ class PipelineRun(QObject):
             self.pipeline.save()
             self.sceneChanged.emit(scene.id)
             tracker.one_done(False, msg)
+            if on_settled:
+                on_settled()
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: video", work, kind="video",
                              on_done=done, on_fail=fail)
 
-    def _chain_lipsync(self, scene: Scene, video_item, lipsync_model, tracker: _BatchTracker) -> None:
+    def _chain_lipsync(self, scene: Scene, video_item, lipsync_model, tracker: _BatchTracker,
+                       on_settled: Optional[Callable] = None) -> None:
         """The concrete first-of-its-kind 'stage N's on_done submits stage
         N+1' chain: the video job's on_done, above, calls this, which
         submits a SECOND job rather than finishing the scene immediately."""
@@ -561,6 +584,8 @@ class PipelineRun(QObject):
             self._swap_interim_for_final(scene, video_item)
             self.sceneChanged.emit(scene.id)
             tracker.one_done(True)
+            if on_settled:
+                on_settled()
             return
         params = dict(lipsync_model.default_params())
         params["video_url"] = http.data_uri(video_item.path)
@@ -579,6 +604,8 @@ class PipelineRun(QObject):
             self._swap_interim_for_final(scene, item)
             self.sceneChanged.emit(scene.id)
             tracker.one_done(True)
+            if on_settled:
+                on_settled()
 
         def fail(msg):
             # A failed lip-sync pass still leaves a perfectly good plain
@@ -587,6 +614,8 @@ class PipelineRun(QObject):
             self._swap_interim_for_final(scene, video_item)
             self.sceneChanged.emit(scene.id)
             tracker.one_done(True)
+            if on_settled:
+                on_settled()
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: lip-sync", work, kind="lip_sync",
                              on_done=done, on_fail=fail)

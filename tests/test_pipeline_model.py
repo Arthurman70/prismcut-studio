@@ -59,3 +59,25 @@ def test_moviepipeline_default_status_is_draft():
     p = MoviePipeline()
     assert p.status == "draft"
     assert p.id  # auto-generated, never blank
+
+
+def test_scene_image_video_model_default_to_empty_string():
+    s = new_scene(0)
+    assert s.image_model == ""
+    assert s.video_model == ""
+
+
+def test_scene_model_overrides_round_trip_through_save_and_load(tmp_path):
+    p = MoviePipeline(name="Test movie", image_model="google::gemini-3-pro-image",
+                      video_model="google::veo-3.1-generate-preview")
+    scene = new_scene(0)
+    scene.image_model = "openai::gpt-image-2"
+    scene.video_model = "xai::grok-imagine-video-1.5"
+    p.scenes.append(scene)
+
+    out = tmp_path / "pipeline.json"
+    p.save(out)
+    loaded = MoviePipeline.load(out)
+
+    assert loaded.scenes[0].image_model == "openai::gpt-image-2"
+    assert loaded.scenes[0].video_model == "xai::grok-imagine-video-1.5"
