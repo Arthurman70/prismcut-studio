@@ -5,7 +5,7 @@
 ; CI can override the version without editing this file:
 ;     ISCC.exe /DMyAppVersion=1.2.3 packaging\installer.iss
 #ifndef MyAppVersion
-  #define MyAppVersion "1.3.0"
+  #define MyAppVersion "1.4.0"
 #endif
 #define MyAppName "PrismCut Studio"
 #define MyAppPublisher "PrismCut Studio contributors"
