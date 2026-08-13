@@ -199,6 +199,11 @@
     { "id": "deepseek-v4-pro", "provider": "deepseek", "label": "DeepSeek V4 Pro", "caps": ["chat"] },
 
     { "id": "MiniMax-M2", "provider": "minimax", "label": "MiniMax M2 (chat)", "caps": ["chat"] },
+    { "id": "image-01", "provider": "minimax", "label": "MiniMax Image-01", "caps": ["image_generate"],
+      "params": [
+        { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4"], "default": "1:1" }
+      ],
+      "notes": "Accepts at most one reference image (subject_reference) per call, unlike some other providers' multi-reference support." },
     { "id": "MiniMax-H3", "provider": "minimax", "label": "Hailuo 03 (MiniMax H3) - native 2K + audio", "caps": ["video_generate", "image_to_video"],
       "params": [
         { "name": "duration", "label": "Duration (s)", "type": "int", "min": 4, "max": 15, "default": 6 },

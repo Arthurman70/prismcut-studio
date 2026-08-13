@@ -122,6 +122,64 @@ def test_minimax_video_flow(monkeypatch, registry, keychain, tmp_path):
     assert any("video_generation" in c for c in calls)
 
 
+def test_minimax_image_flow(monkeypatch, registry, keychain):
+    from pathlib import Path
+
+    captured = {}
+    fake_b64 = base64.b64encode(b"fake-png-bytes").decode()
+
+    def fake_request_json(method, url, **kw):
+        captured.update(method=method, url=url, **kw)
+        return {"data": {"image_base64": [fake_b64]}, "base_resp": {"status_code": 0}}
+
+    monkeypatch.setattr(http, "request_json", fake_request_json)
+    adapter = make_adapter("minimax", keychain, registry)
+    outs = adapter.generate_image("image-01", "a cat astronaut", {"aspect_ratio": "16:9"})
+
+    assert captured["url"].endswith("/v1/image_generation")
+    assert captured["json_body"]["model"] == "image-01"
+    assert captured["json_body"]["prompt"] == "a cat astronaut"
+    assert captured["json_body"]["aspect_ratio"] == "16:9"
+    assert captured["json_body"]["response_format"] == "base64"
+    assert "subject_reference" not in captured["json_body"]
+    assert len(outs) == 1
+    # base64-decoded, not the hex decode music()/tts() use in this same adapter
+    assert Path(outs[0]).read_bytes() == b"fake-png-bytes"
+
+
+def test_minimax_image_reference_uses_only_the_first_of_several(monkeypatch, registry, keychain,
+                                                                 tmp_path):
+    captured = {}
+    fake_b64 = base64.b64encode(b"fake-png-bytes").decode()
+    ref1 = tmp_path / "ref1.png"
+    ref1.write_bytes(b"r1")
+    ref2 = tmp_path / "ref2.png"
+    ref2.write_bytes(b"r2")
+
+    def fake_request_json(method, url, **kw):
+        captured.update(**kw)
+        return {"data": {"image_base64": [fake_b64]}, "base_resp": {"status_code": 0}}
+
+    monkeypatch.setattr(http, "request_json", fake_request_json)
+    adapter = make_adapter("minimax", keychain, registry)
+    adapter.generate_image("image-01", "a cat astronaut", {}, refs=[str(ref1), str(ref2)])
+
+    subject_refs = captured["json_body"]["subject_reference"]
+    assert len(subject_refs) == 1   # MiniMax accepts only one reference image per request
+    assert subject_refs[0]["type"] == "character"
+    assert subject_refs[0]["image_file"].startswith("data:")   # http.data_uri() output
+
+
+def test_minimax_image_raises_on_no_image_returned(monkeypatch, registry, keychain):
+    def fake_request_json(method, url, **kw):
+        return {"data": {}, "base_resp": {"status_code": 0}}
+
+    monkeypatch.setattr(http, "request_json", fake_request_json)
+    adapter = make_adapter("minimax", keychain, registry)
+    with pytest.raises(http.ProviderError):
+        adapter.generate_image("image-01", "a cat astronaut", {})
+
+
 def test_seedance_appends_flags(monkeypatch, registry, keychain):
     captured = {}
 

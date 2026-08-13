@@ -52,6 +52,16 @@ def test_headline_models_present(registry):
     assert registry.find("deepseek", "deepseek-v4-flash")
 
 
+def test_minimax_image_01_present_and_priced(registry):
+    m = registry.find("minimax", "image-01")
+    assert m and "image_generate" in m.caps
+    assert m.key == "minimax::image-01"
+
+    from prismcut.core import pricing
+    prices = pricing.load_bundled()["prices"]
+    assert prices[m.key]["unit"] == "per_image"
+
+
 def test_kling_text_and_image_to_video_present(registry):
     t2v = registry.find("fal", "fal-ai/kling-video/v2.6/pro/text-to-video")
     i2v = registry.find("fal", "fal-ai/kling-video/v2.6/pro/image-to-video")

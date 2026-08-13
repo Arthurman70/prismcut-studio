@@ -1,10 +1,12 @@
-"""MiniMax: Hailuo video (incl. MiniMax-H3 / "Hailuo 03"), music, TTS and chat.
+"""MiniMax: Hailuo video (incl. MiniMax-H3 / "Hailuo 03"), Image-01 image
+generation, music, TTS and chat.
 
 Docs: https://platform.minimax.io/docs - key: https://platform.minimax.io
 International base URL: https://api.minimax.io  (mainland: https://api.minimaxi.com)
 """
 from __future__ import annotations
 
+import base64
 import binascii
 from typing import Optional
 
@@ -28,6 +30,35 @@ class MiniMax(OpenAICompatChat):
         if base.get("status_code") not in (None, 0):
             raise ProviderError(f"MiniMax error {base.get('status_code')}: "
                                 f"{base.get('status_msg', 'unknown')}")
+
+    # ---------------------------------------------------------------- image
+    def generate_image(self, model: str, prompt: str, params: Optional[dict] = None,
+                       refs: Optional[list] = None) -> list[str]:
+        params = params or {}
+        body: dict = {"model": model, "prompt": prompt, "response_format": "base64"}
+        if params.get("aspect_ratio"):
+            body["aspect_ratio"] = params["aspect_ratio"]
+        if refs:
+            # Only ONE reference image is accepted per request (unlike
+            # Google's up to 8) - take the first, silently drop the rest.
+            body["subject_reference"] = [{"type": "character",
+                                          "image_file": http.data_uri(refs[0])}]
+        data = http.request_json("POST", self.base_url() + "/v1/image_generation",
+                                 headers=self._auth(), json_body=body, timeout=120)
+        self._check(data)
+        b64_list = (data.get("data") or {}).get("image_base64") or []
+        if not b64_list:
+            raise ProviderError(f"MiniMax image generation returned no image: {str(data)[:300]}")
+        out = []
+        for b64 in b64_list:
+            try:
+                out.append(self._save_bytes(base64.b64decode(b64), "image01", ".png"))
+            except (binascii.Error, ValueError):
+                continue
+        if not out:
+            raise ProviderError(
+                f"MiniMax image generation returned undecodable image data: {str(data)[:300]}")
+        return out
 
     # ---------------------------------------------------------------- video
     def generate_video(self, model: str, prompt: str, params: Optional[dict] = None,
