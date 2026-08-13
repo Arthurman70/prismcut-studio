@@ -1,12 +1,14 @@
 import pytest
 
-from prismcut.core.pipeline_orchestrator import _BatchTracker, _parse_breakdown, resolve_video_plan
+from prismcut.core.pipeline_orchestrator import (_BatchTracker, _parse_breakdown,
+                                                 _seed_scene_durations, resolve_video_plan)
 
 
 class _FakeModel:
-    def __init__(self, key, caps):
+    def __init__(self, key, caps, params=None):
         self._key = key
         self.caps = caps
+        self.params = params or []
 
     @property
     def key(self):
@@ -200,3 +202,59 @@ def test_parse_breakdown_skips_a_false_positive_bracket_before_the_real_array():
 def test_parse_breakdown_still_fails_cleanly_on_a_pure_refusal():
     text = "I'm not able to help write a breakdown for that request."
     assert _parse_breakdown(text) == []
+
+
+# --------------------------------------------------- _seed_scene_durations
+def test_seed_scene_durations_noop_when_seconds_is_zero_or_model_is_none():
+    from prismcut.core.pipeline import new_scene
+
+    model = _FakeModel("test::video", ["video_generate"],
+                       [{"name": "duration", "type": "int", "min": 4, "max": 8, "default": 8}])
+    s1 = new_scene(0)
+    _seed_scene_durations([s1], 0.0, model)
+    assert s1.video_params == {}
+
+    s2 = new_scene(0)
+    _seed_scene_durations([s2], 10.0, None)
+    assert s2.video_params == {}
+
+
+def test_seed_scene_durations_noop_without_a_duration_param():
+    from prismcut.core.pipeline import new_scene
+
+    model = _FakeModel("test::video", ["video_generate"],
+                       [{"name": "aspect_ratio", "type": "choice", "choices": ["16:9"],
+                        "default": "16:9"}])
+    s = new_scene(0)
+    _seed_scene_durations([s], 10.0, model)
+    assert s.video_params == {}
+
+
+def test_seed_scene_durations_clamps_int_range_to_the_models_own_limits():
+    from prismcut.core.pipeline import new_scene
+
+    model = _FakeModel("test::video", ["video_generate"],
+                       [{"name": "duration", "type": "int", "min": 4, "max": 8, "default": 8}])
+    s1, s2 = new_scene(0), new_scene(1)
+    _seed_scene_durations([s1, s2], 20.0, model)   # requested well above the model's max
+    assert s1.video_params["duration"] == 8
+    assert s2.video_params["duration"] == 8
+
+    s3 = new_scene(0)
+    _seed_scene_durations([s3], 1.0, model)   # requested well below the model's min
+    assert s3.video_params["duration"] == 4
+
+
+def test_seed_scene_durations_picks_the_closest_choice():
+    from prismcut.core.pipeline import new_scene
+
+    model = _FakeModel("test::video", ["video_generate"],
+                       [{"name": "duration", "type": "choice", "choices": ["5", "10"],
+                        "default": "5"}])
+    near_five = new_scene(0)
+    _seed_scene_durations([near_five], 7.0, model)
+    assert near_five.video_params["duration"] == "5"
+
+    near_ten = new_scene(0)
+    _seed_scene_durations([near_ten], 9.0, model)
+    assert near_ten.video_params["duration"] == "10"

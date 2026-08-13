@@ -115,6 +115,18 @@ class MoviePipeline:
     video_model: str = ""
     lipsync_model: str = ""            # "" = no separate lip-sync pass
     scenes: list = field(default_factory=list)     # list[Scene]
+    # User-uploaded "cast" - character/style reference images set once for
+    # the whole movie, merged into every scene's own image-generation refs
+    # (see pipeline_orchestrator._image_context_refs) alongside the
+    # earlier-scenes-as-context chain. Plain local paths, same tolerate-
+    # staleness style as Scene.clip_ids - not registered in the bin.
+    reference_images: list = field(default_factory=list)   # list[str]
+    # Seeds new scenes' video_params["duration"] at script-breakdown time
+    # (clamped to the chosen video model's own min/max/choices - see
+    # pipeline_orchestrator._seed_scene_durations). 0 = no override, each
+    # scene keeps using the video model's own bare registry default, same
+    # as before this field existed.
+    default_scene_duration: float = 0.0
     video_track_id: str = ""
     audio_track_id: str = ""
     status: str = "draft"

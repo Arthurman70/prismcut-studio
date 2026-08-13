@@ -548,9 +548,12 @@ def test_new_pipeline_dialog_accept_does_not_require_a_voice_model(win):
 
 
 def test_new_pipeline_dialog_shows_cost_estimate_as_models_are_picked(win):
-    """The new cost-estimation feature: a running 'estimated cost for N
-    scenes' preview that updates as image/video/voice models and the
-    scene-count preview are changed."""
+    """The cost-estimation feature: a running 'estimated cost for N scenes'
+    preview that updates as image/video/voice models change, and as the
+    target-length/default-scene-length inputs (which together drive the
+    implied scene count) change."""
+    import math
+
     from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
 
     dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
@@ -564,10 +567,61 @@ def test_new_pipeline_dialog_shows_cost_estimate_as_models_are_picked(win):
         assert idx >= 0
         dlg.video_combo.setCurrentIndex(idx)
         assert "video ~$" in dlg.cost_label.text()
-        assert f"for {dlg.est_scenes.value()} scenes" in dlg.cost_label.text()
+        n = math.ceil(dlg.target_minutes.value() * 60.0 / dlg.default_seconds.value())
+        assert f"for {n} scenes" in dlg.cost_label.text()
 
-        dlg.est_scenes.setValue(20)
-        assert "for 20 scenes" in dlg.cost_label.text()
+        dlg.target_minutes.setValue(10.0)
+        n2 = math.ceil(10.0 * 60.0 / dlg.default_seconds.value())
+        assert f"for {n2} scenes" in dlg.cost_label.text()
+    finally:
+        dlg.close()
+
+
+def test_new_pipeline_dialog_default_scene_length_clamps_to_video_model(win):
+    """The default-scene-length control must track whichever video model is
+    selected - never letting the user ask for a duration the model would
+    reject - since this is the same clamp _seed_scene_durations applies
+    when actually seeding new scenes."""
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        idx = dlg.video_combo.findData("google::veo-3.1-generate-preview")   # 4-8s range
+        assert idx >= 0
+        dlg.video_combo.setCurrentIndex(idx)
+        assert dlg.default_seconds.minimum() == pytest.approx(4.0)
+        assert dlg.default_seconds.maximum() == pytest.approx(8.0)
+
+        idx = dlg.video_combo.findData("xai::grok-imagine-video-1.5")   # 1-15s range
+        assert idx >= 0
+        dlg.video_combo.setCurrentIndex(idx)
+        assert dlg.default_seconds.minimum() == pytest.approx(1.0)
+        assert dlg.default_seconds.maximum() == pytest.approx(15.0)
+    finally:
+        dlg.close()
+
+
+def test_new_pipeline_dialog_reference_images_flow_into_pipeline(win, tmp_path):
+    """The reference "cast" upload: add_reference()/the file dialog both
+    feed the same list, and it lands on the created MoviePipeline verbatim
+    so pipeline_orchestrator._image_context_refs can merge it into every
+    scene's own generation refs."""
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    ref = tmp_path / "hero.png"
+    ref.write_bytes(b"\x89PNG\r\n\x1a\n")
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        dlg.add_reference(str(ref))
+        assert dlg.references == [str(ref)]
+        assert "hero.png" in dlg.ref_list.text()
+
+        dlg.brief_edit.setPlainText("A robot learns to paint.")
+        dlg._accept()   # script/image/video combos already default to a real model each
+
+        assert dlg.pipeline is not None
+        assert dlg.pipeline.reference_images == [str(ref)]
+        assert dlg.pipeline.default_scene_duration == dlg.default_seconds.value()
     finally:
         dlg.close()
 
@@ -1121,6 +1175,43 @@ def test_image_batch_generates_sequentially_with_reference_context(win):
         assert calls[0] == []                # scene 1: no earlier scenes to reference yet
         assert len(calls[1]) == 1            # scene 2: references scene 1 (anchor == previous)
         assert len(calls[2]) == 2            # scene 3: references scene 1 (anchor) + scene 2 (previous)
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_reference_cast_images_are_merged_into_every_scenes_refs(win, tmp_path):
+    """The pipeline-level "cast" (MoviePipeline.reference_images) must show
+    up in EVERY scene's own generation refs, including the first scene
+    (which has no earlier-scene continuity refs yet) - and ahead of any
+    earlier-scene refs, since it's the more authoritative reference and
+    the one providers that only accept a single ref should see."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = []
+
+    class FakeAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            calls.append(list(refs) if refs else [])
+            return [__file__]
+
+    cast = tmp_path / "hero.png"
+    cast.write_bytes(b"\x89PNG\r\n\x1a\n")
+    pipeline = MoviePipeline(name="Cast refs test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             reference_images=[str(cast)])
+    pipeline.scenes = [new_scene(0), new_scene(1)]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.movie.run.run_image_batch()
+        assert _wait_until(lambda: all(s.image.active for s in pipeline.scenes), timeout=10.0)
+        assert calls[0] == [str(cast)]                      # scene 1: cast ref, no earlier scenes yet
+        assert calls[1][0] == str(cast)                      # scene 2: cast ref still first
+        assert len(calls[1]) == 2                             # ...plus scene 1's continuity ref
     finally:
         win.get_adapter = saved_get_adapter
         win.movie._set_pipeline(MoviePipeline(name="empty"))

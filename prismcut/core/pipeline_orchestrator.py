@@ -154,6 +154,8 @@ class PipelineRun(QObject):
                 if on_fail:
                     on_fail(f"Could not parse scene breakdown. Response started: “{snippet}”")
                 return
+            video_model = self.win.registry.by_key(self.pipeline.video_model)
+            _seed_scene_durations(scenes, self.pipeline.default_scene_duration, video_model)
             self.pipeline.scenes = scenes
             self._set_status("scenes_ready")
             self.logMessage.emit(f"Scripted {len(scenes)} scene(s).")
@@ -218,19 +220,24 @@ class PipelineRun(QObject):
                                    on_settled=advance)
 
     def _image_context_refs(self, scene: Scene) -> list:
-        """Reference image paths for visual continuity: the first EARLIER
-        scene that has an image (an anchor, resisting gradual drift across a
-        long chain of "feed the last output back in") plus the immediately
-        preceding scene with an image (for local continuity) - deduplicated
-        when they're the same scene. Works whether an earlier scene's image
-        came from generation or a user's draftboard override, since both
-        just set scene.image.active the same way."""
+        """Reference image paths for visual continuity: the pipeline's own
+        user-uploaded "cast" (MoviePipeline.reference_images) FIRST, since
+        that's the most authoritative reference for a character/style and
+        (for providers that only accept a single reference image, e.g.
+        MiniMax) the one that should win when refs get truncated - followed
+        by the first EARLIER scene that has an image (an anchor, resisting
+        gradual drift across a long chain of "feed the last output back
+        in") plus the immediately preceding scene with an image (for local
+        continuity), deduplicated when they're the same scene. Works
+        whether an earlier scene's image came from generation or a user's
+        draftboard override, since both just set scene.image.active the
+        same way."""
+        refs = [p for p in self.pipeline.reference_images if p]
         earlier = sorted((s for s in self.pipeline.scenes
                          if s.index < scene.index and s.image.active), key=lambda s: s.index)
         if not earlier:
-            return []
+            return refs
         picks = {earlier[0].id: earlier[0], earlier[-1].id: earlier[-1]}   # anchor + previous
-        refs = []
         for s in sorted(picks.values(), key=lambda s: s.index):
             item = self.win.project.media.get(s.image.active.media_id)
             if item:
@@ -746,3 +753,37 @@ def _parse_breakdown(text: str) -> list[Scene]:
             s.script = str(item).strip()
         scenes.append(s)
     return scenes
+
+
+def _seed_scene_durations(scenes: list, seconds: float, video_model) -> None:
+    """Mutates each scene's video_params["duration"] in place from the
+    pipeline's chosen default scene length (MoviePipeline.
+    default_scene_duration), clamped to whatever the video model itself
+    actually supports - an int/float range, or the closest value of a
+    fixed choice list - so a pipeline-wide default never silently asks
+    for a duration the model would reject. No-op when seconds<=0 (no
+    default set, every video model already has its own bare registry
+    default) or the model has no duration param at all."""
+    if seconds <= 0 or video_model is None:
+        return
+    spec = next((p for p in video_model.params if p.get("name") == "duration"), None)
+    if not spec:
+        return
+    if spec.get("type") == "choice":
+        try:
+            ranked = sorted((abs(float(c) - seconds), c) for c in (spec.get("choices") or []))
+        except (TypeError, ValueError):
+            return
+        if not ranked:
+            return
+        value = ranked[0][1]
+    else:
+        value = seconds
+        if spec.get("min") is not None:
+            value = max(float(spec["min"]), value)
+        if spec.get("max") is not None:
+            value = min(float(spec["max"]), value)
+        if spec.get("type") == "int":
+            value = int(round(value))
+    for scene in scenes:
+        scene.video_params["duration"] = value

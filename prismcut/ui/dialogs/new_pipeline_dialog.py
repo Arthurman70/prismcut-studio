@@ -1,13 +1,18 @@
 """New movie dialog: one brief + one model picker per pipeline stage."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLineEdit,
-                               QMessageBox, QPlainTextEdit, QPushButton, QSpinBox)
+import math
+from pathlib import Path
+
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+                               QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QPlainTextEdit, QPushButton)
 
 from ...core import cost_estimator
+from ...core import media as media_utils
 from ...core.pipeline import MoviePipeline
 from ...providers.base import ChatMessage
-from ..widgets.common import ModelCombo, label
+from ..widgets.common import DropAcceptor, ModelCombo, label
 
 
 class NewPipelineDialog(QDialog):
@@ -62,17 +67,57 @@ class NewPipelineDialog(QDialog):
             "scene's narration audio. Leave as None to skip it.")
         form.addRow("Lip-sync model", self.lipsync_combo)
 
-        self.est_scenes = QSpinBox()
-        self.est_scenes.setRange(1, 100)
-        self.est_scenes.setValue(8)
-        self.est_scenes.setToolTip(
-            "Just for the cost preview below - the AI decides the real scene count from "
-            "your brief during script breakdown, this doesn't constrain it.")
-        form.addRow("Est. scenes (for cost preview)", self.est_scenes)
+        # Reference "cast" - uploaded once for the whole movie, merged into
+        # every scene's own image-generation references alongside the
+        # existing earlier-scenes-as-context chain (see
+        # pipeline_orchestrator._image_context_refs). Mirrors generate_
+        # panel.py's own reference-image row (references/add_reference/
+        # _sync_refs/DropAcceptor) rather than inventing a new pattern.
+        self.references: list[str] = []
+        rrow = QHBoxLayout()
+        self.ref_list = QLabel("none")
+        self.ref_list.setWordWrap(True)
+        add_ref = QPushButton("＋ file")
+        add_ref.clicked.connect(self._add_ref_dialog)
+        clr_ref = QPushButton("✕")
+        clr_ref.setFixedWidth(30)
+        clr_ref.clicked.connect(self._clear_refs)
+        rrow.addWidget(self.ref_list, 1)
+        rrow.addWidget(add_ref)
+        rrow.addWidget(clr_ref)
+        ref_row_label = label("Reference cast (optional)", dim=True)
+        ref_row_label.setToolTip(
+            "Character/style reference images used for every scene, on top of the automatic "
+            "earlier-scene continuity references. Not every image model actually reads "
+            "reference images (e.g. Google's Imagen ignores them) - if references don't seem "
+            "to be having an effect, try a different image model.")
+        form.addRow(ref_row_label, rrow)
+        DropAcceptor(self, ("image",), lambda paths_: [self.add_reference(p) for p in paths_])
+
+        self.target_minutes = QDoubleSpinBox()
+        self.target_minutes.setRange(0.5, 180.0)
+        self.target_minutes.setSingleStep(0.5)
+        self.target_minutes.setValue(2.0)
+        self.target_minutes.setSuffix(" min")
+        self.target_minutes.setToolTip(
+            "How long you want the finished movie to be. The AI still decides the real "
+            "scene count from your brief during script breakdown - this and the default "
+            "scene length below guide it and drive the cost preview, they don't hard-cap it.")
+        form.addRow("Target length", self.target_minutes)
+
+        self.default_seconds = QDoubleSpinBox()
+        self.default_seconds.setDecimals(1)
+        self.default_seconds.setToolTip(
+            "Individual scenes are capped by the selected video model's own limit - a "
+            "longer movie means more scenes, not longer ones.")
+        form.addRow("Default scene length", self.default_seconds)
+        self.video_combo.currentIndexChanged.connect(self._clamp_default_seconds)
+        self._clamp_default_seconds()
+
         self.cost_label = label("", dim=True)
         self.cost_label.setWordWrap(True)
         form.addRow("", self.cost_label)
-        for w in (self.est_scenes,):
+        for w in (self.target_minutes, self.default_seconds):
             w.valueChanged.connect(self._update_cost_estimate)
         for combo in (self.image_combo, self.video_combo, self.audio_combo):
             combo.currentIndexChanged.connect(self._update_cost_estimate)
@@ -125,8 +170,57 @@ class NewPipelineDialog(QDialog):
         self.enhance_btn.setText("Enhancing…")
         self.jobs.submit("Enhance movie brief", work, kind="chat", on_done=done, on_fail=fail)
 
+    # ------------------------------------------------------------- references
+    def add_reference(self, path: str):
+        if path and Path(path).exists():
+            self.references.append(path)
+            self._sync_refs()
+
+    def _add_ref_dialog(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Reference image", "", media_utils.IMAGE_FILTER)
+        if f:
+            self.add_reference(f)
+
+    def _clear_refs(self):
+        self.references = []
+        self._sync_refs()
+
+    def _sync_refs(self):
+        self.ref_list.setText(", ".join(Path(r).name for r in self.references) or "none")
+
+    def _clamp_default_seconds(self, *_args):
+        """Keeps the default-scene-length spinbox honest about what the
+        currently selected video model can actually do, rather than
+        implying an arbitrary duration is achievable - see _seed_scene_
+        durations in the orchestrator, which clamps the same way when
+        seeding new scenes."""
+        model = self.video_combo.current_model()
+        spec = next((p for p in (model.params if model else [])
+                    if p.get("name") == "duration"), None)
+        if not spec:
+            self.default_seconds.setEnabled(False)
+            return
+        self.default_seconds.setEnabled(True)
+        if spec.get("type") == "choice":
+            try:
+                nums = [float(c) for c in (spec.get("choices") or [])]
+            except (TypeError, ValueError):
+                nums = []
+            lo, hi = (min(nums), max(nums)) if nums else (1.0, 15.0)
+        else:
+            lo = float(spec.get("min", 1.0))
+            hi = float(spec.get("max", 15.0))
+        self.default_seconds.setRange(lo, hi)
+        self.default_seconds.setSuffix(f" s (this model: {lo:g}-{hi:g}s)")
+        try:
+            default = float(spec.get("default", lo))
+        except (TypeError, ValueError):
+            default = lo
+        self.default_seconds.setValue(max(lo, min(hi, default)))
+
     def _update_cost_estimate(self, *_args):
-        n = self.est_scenes.value()
+        seconds = max(1.0, self.default_seconds.value())
+        n = max(1, math.ceil(self.target_minutes.value() * 60.0 / seconds))
         breakdown = []
         total = 0.0
 
@@ -183,5 +277,7 @@ class NewPipelineDialog(QDialog):
             name=self.name_edit.text().strip() or "Untitled movie", brief=brief,
             script_model=script.key, image_model=image.key,
             audio_model=audio.key if audio else "", video_model=video.key,
-            lipsync_model=lipsync.key if lipsync else "")
+            lipsync_model=lipsync.key if lipsync else "",
+            reference_images=list(self.references),
+            default_scene_duration=self.default_seconds.value())
         self.accept()

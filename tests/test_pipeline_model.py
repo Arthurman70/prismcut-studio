@@ -81,3 +81,21 @@ def test_scene_model_overrides_round_trip_through_save_and_load(tmp_path):
 
     assert loaded.scenes[0].image_model == "openai::gpt-image-2"
     assert loaded.scenes[0].video_model == "xai::grok-imagine-video-1.5"
+
+
+def test_moviepipeline_reference_images_and_default_scene_duration_defaults():
+    p = MoviePipeline()
+    assert p.reference_images == []
+    assert p.default_scene_duration == 0.0
+
+
+def test_moviepipeline_reference_images_and_default_scene_duration_round_trip(tmp_path):
+    p = MoviePipeline(name="Cast test", reference_images=["/tmp/hero.png", "/tmp/villain.png"],
+                      default_scene_duration=7.5)
+
+    out = tmp_path / "pipeline.json"
+    p.save(out)
+    loaded = MoviePipeline.load(out)
+
+    assert loaded.reference_images == ["/tmp/hero.png", "/tmp/villain.png"]
+    assert loaded.default_scene_duration == 7.5
