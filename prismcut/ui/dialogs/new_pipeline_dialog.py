@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFileD
 from ...core import cost_estimator
 from ...core import media as media_utils
 from ...core.pipeline import MoviePipeline
+from ...core.pipeline_orchestrator import _seed_scene_durations
 from ...providers.base import ChatMessage
 from ..widgets.common import DropAcceptor, ModelCombo, label
 
@@ -45,6 +46,21 @@ class NewPipelineDialog(QDialog):
         erow.addWidget(self.enhance_btn)
         erow.addStretch(1)
         form.addRow("", erow)
+
+        irow = QHBoxLayout()
+        self.import_btn = QPushButton("📥 Import my own script…")
+        self.import_btn.setToolTip(
+            "Already have a script or outline? Paste it and skip the brief entirely - the AI "
+            "structures your existing scenes/dialogue into the pipeline instead of inventing "
+            "new ones.")
+        self.import_btn.clicked.connect(self._import_script)
+        irow.addWidget(self.import_btn)
+        irow.addStretch(1)
+        form.addRow("", irow)
+        self._imported_scenes: list = []
+        self.import_status = label("", dim=True)
+        self.import_status.setWordWrap(True)
+        form.addRow("", self.import_status)
 
         self.script_combo = ModelCombo(registry, settings, ("chat",), role="pipeline_script")
         form.addRow("Script model", self.script_combo)
@@ -170,6 +186,17 @@ class NewPipelineDialog(QDialog):
         self.enhance_btn.setText("Enhancing…")
         self.jobs.submit("Enhance movie brief", work, kind="chat", on_done=done, on_fail=fail)
 
+    def _import_script(self):
+        from .import_script_dialog import ImportScriptDialog
+
+        model = self.script_combo.current_model()
+        dlg = ImportScriptDialog(model, self.get_adapter, self.jobs, self)
+        if dlg.exec() and dlg.scenes:
+            self._imported_scenes = dlg.scenes
+            self.import_status.setText(
+                f"✓ Imported {len(dlg.scenes)} scene(s) from your script - the brief above "
+                "will be ignored.")
+
     # ------------------------------------------------------------- references
     def add_reference(self, path: str):
         if path and Path(path).exists():
@@ -218,9 +245,12 @@ class NewPipelineDialog(QDialog):
             default = lo
         self.default_seconds.setValue(max(lo, min(hi, default)))
 
-    def _update_cost_estimate(self, *_args):
+    def _scene_count_hint(self) -> int:
         seconds = max(1.0, self.default_seconds.value())
-        n = max(1, math.ceil(self.target_minutes.value() * 60.0 / seconds))
+        return max(1, math.ceil(self.target_minutes.value() * 60.0 / seconds))
+
+    def _update_cost_estimate(self, *_args):
+        n = self._scene_count_hint()
         breakdown = []
         total = 0.0
 
@@ -262,8 +292,10 @@ class NewPipelineDialog(QDialog):
         script = self.script_combo.current_model()
         image = self.image_combo.current_model()
         video = self.video_combo.current_model()
-        if not brief:
-            QMessageBox.information(self, "Brief needed", "Describe the movie/show first.")
+        if not brief and not self._imported_scenes:
+            QMessageBox.information(
+                self, "Brief needed",
+                "Describe the movie/show, or use “Import my own script…” instead.")
             return
         if not (script and image and video):
             QMessageBox.information(
@@ -279,5 +311,10 @@ class NewPipelineDialog(QDialog):
             audio_model=audio.key if audio else "", video_model=video.key,
             lipsync_model=lipsync.key if lipsync else "",
             reference_images=list(self.references),
-            default_scene_duration=self.default_seconds.value())
+            default_scene_duration=self.default_seconds.value(),
+            scene_count_hint=self._scene_count_hint())
+        if self._imported_scenes:
+            self.pipeline.scenes = self._imported_scenes
+            _seed_scene_durations(self.pipeline.scenes, self.pipeline.default_scene_duration, video)
+            self.pipeline.status = "scenes_ready"
         self.accept()

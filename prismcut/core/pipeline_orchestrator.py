@@ -128,10 +128,17 @@ class PipelineRun(QObject):
             "generation pipeline. Respond with NOTHING but a JSON array - the very first "
             "character of your reply must be '[' and the very last must be ']'. No greeting, "
             "no explanation, no markdown code fence, no text before or after the array. Each "
-            'array element is an object with "script" (a 1-2 sentence on-screen visual/action '
-            'description, written as an image/video generation prompt) and "narration" (the '
-            "exact dialogue or voiceover line spoken during that scene, or an empty string "
-            "for a silent, visual-only scene).")
+            'array element is an object with "script" (a detailed on-screen visual/action '
+            "description written as an image/video generation prompt - setting, character "
+            'appearance and blocking, mood, lighting, camera framing) and "narration" (the '
+            "full spoken content for that scene, written as it would actually be delivered - "
+            "dialogue woven naturally into narration/voiceover, not just a single terse line "
+            "- or an empty string for a silent, visual-only scene).")
+        if self.pipeline.scene_count_hint > 0:
+            sys_prompt += (
+                f" Aim for roughly {self.pipeline.scene_count_hint} scene(s) total to match "
+                "the requested movie length, but use your own judgment if the brief clearly "
+                "calls for more or fewer - this is guidance, not a hard limit.")
 
         def work(job):
             job.progress(-1, "Writing scene breakdown")

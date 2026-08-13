@@ -99,3 +99,14 @@ def test_moviepipeline_reference_images_and_default_scene_duration_round_trip(tm
 
     assert loaded.reference_images == ["/tmp/hero.png", "/tmp/villain.png"]
     assert loaded.default_scene_duration == 7.5
+
+
+def test_moviepipeline_scene_count_hint_defaults_to_zero_and_round_trips(tmp_path):
+    p = MoviePipeline()
+    assert p.scene_count_hint == 0
+
+    p2 = MoviePipeline(name="Hint test", scene_count_hint=12)
+    out = tmp_path / "pipeline.json"
+    p2.save(out)
+    loaded = MoviePipeline.load(out)
+    assert loaded.scene_count_hint == 12

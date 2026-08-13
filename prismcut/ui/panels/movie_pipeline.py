@@ -382,7 +382,15 @@ class MoviePipelinePanel(QWidget):
             dlg.pipeline.save()
             self._refresh_load_combo()
             self._set_pipeline(dlg.pipeline)
-            self._run_script_breakdown()
+            if dlg.pipeline.scenes:
+                # Scenes already came from "Import my own script..." in the
+                # dialog - running the normal invent-from-brief breakdown
+                # here would silently overwrite them. Audio still needs
+                # kicking off explicitly, same as generate_breakdown's own
+                # done() callback does for the invented-scenes path.
+                self.run.run_audio_batch()
+            else:
+                self._run_script_breakdown()
 
     def _retry_script(self):
         self._run_script_breakdown()

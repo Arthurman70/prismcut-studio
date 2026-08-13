@@ -127,6 +127,12 @@ class MoviePipeline:
     # scene keeps using the video model's own bare registry default, same
     # as before this field existed.
     default_scene_duration: float = 0.0
+    # Rough scene-count guidance for generate_breakdown's prompt, derived
+    # from the New Movie dialog's target-length/default-scene-length inputs
+    # (same math as its cost preview) - a hint the AI is told to aim for,
+    # never a hard constraint (it still decides the real count from the
+    # brief). 0 = no hint given, same as before this field existed.
+    scene_count_hint: int = 0
     video_track_id: str = ""
     audio_track_id: str = ""
     status: str = "draft"

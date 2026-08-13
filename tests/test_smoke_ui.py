@@ -692,6 +692,112 @@ def test_new_pipeline_dialog_enhance_brief_failure_shows_warning_and_reenables(w
         dlg_mod.QMessageBox.warning = saved
 
 
+# ------------------------------------------------------------- import script
+
+def test_import_script_dialog_parses_response_into_scenes(win):
+    from prismcut.ui.dialogs.import_script_dialog import ImportScriptDialog
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            return ('[{"script": "A robot wakes up.", "narration": "Where am I?"}, '
+                    '{"script": "It looks around.", "narration": ""}]')
+
+    model = win.registry.by_key("google::gemini-3.6-flash")
+    dlg = ImportScriptDialog(model, lambda provider: FakeAdapter(), win.jobs, win)
+    try:
+        dlg.text_edit.setPlainText(
+            "Scene 1: a robot wakes up and says \"Where am I?\"\nScene 2: it looks around.")
+        dlg._import()
+        assert _wait_until(lambda: len(dlg.scenes) == 2)
+        assert dlg.scenes[0].script == "A robot wakes up."
+        assert dlg.scenes[0].narration == "Where am I?"
+        assert dlg.scenes[1].narration == ""
+    finally:
+        dlg.close()
+
+
+def test_import_script_dialog_requires_text(win):
+    from prismcut.ui.dialogs import import_script_dialog as dlg_mod
+
+    calls = []
+    saved = dlg_mod.QMessageBox.information
+    dlg_mod.QMessageBox.information = staticmethod(lambda *a, **k: calls.append(a))
+    try:
+        model = win.registry.by_key("google::gemini-3.6-flash")
+        dlg = dlg_mod.ImportScriptDialog(model, win.get_adapter, win.jobs, win)
+        dlg._import()   # empty text_edit
+        assert len(calls) == 1
+        assert dlg.scenes == []
+        dlg.close()
+    finally:
+        dlg_mod.QMessageBox.information = saved
+
+
+def test_import_script_dialog_unparseable_response_warns_and_reenables(win):
+    from prismcut.ui.dialogs import import_script_dialog as dlg_mod
+
+    class RefusingAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            return "I can't do that."
+
+    calls = []
+    saved = dlg_mod.QMessageBox.warning
+    dlg_mod.QMessageBox.warning = staticmethod(lambda *a, **k: calls.append(a))
+    try:
+        model = win.registry.by_key("google::gemini-3.6-flash")
+        dlg = dlg_mod.ImportScriptDialog(model, lambda provider: RefusingAdapter(), win.jobs, win)
+        dlg.text_edit.setPlainText("Scene 1: something.")
+        dlg._import()
+        assert _wait_until(lambda: len(calls) == 1)
+        assert dlg.scenes == []
+        assert dlg.go.isEnabled()   # can retry, not stuck disabled
+        dlg.close()
+    finally:
+        dlg_mod.QMessageBox.warning = saved
+
+
+def test_new_pipeline_dialog_import_script_populates_status_and_accept(win, monkeypatch):
+    """The New Movie dialog's "Import my own script..." button: a
+    successful import records the scenes and shows a status line, and
+    _accept() then attaches those scenes to the pipeline (bypassing the
+    brief requirement) with durations seeded and status already past
+    draft, matching what a normal script breakdown would leave behind."""
+    import prismcut.ui.dialogs.new_pipeline_dialog as dlg_mod
+    from prismcut.core.pipeline import Scene, new_scene
+
+    imported = [new_scene(0)]
+    imported[0].script = "Imported beat."
+
+    class FakeImportDialog:
+        def __init__(self, *a, **k):
+            self.scenes: list[Scene] = []
+
+        def exec(self):
+            self.scenes = imported
+            return 1
+
+    # _import_script() does `from .import_script_dialog import ImportScriptDialog`
+    # LOCALLY (inside the method, not at module scope) - that lookup reads
+    # the module's current attribute at call time, so patching it there is
+    # what actually takes effect, not patching dlg_mod's own namespace.
+    import prismcut.ui.dialogs.import_script_dialog as import_dlg_mod
+    monkeypatch.setattr(import_dlg_mod, "ImportScriptDialog", FakeImportDialog)
+
+    dlg = dlg_mod.NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        dlg._import_script()
+        assert dlg._imported_scenes == imported
+        assert "Imported 1 scene" in dlg.import_status.text()
+
+        dlg.brief_edit.setPlainText("")   # no brief needed once scenes were imported
+        dlg._accept()
+        assert dlg.pipeline is not None
+        assert dlg.pipeline.scenes == imported
+        assert dlg.pipeline.status == "scenes_ready"
+    finally:
+        dlg.close()
+
+
 def test_movie_pipeline_panel_loads_pipeline_and_builds_scene_rows(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 
@@ -797,6 +903,128 @@ def test_movie_pipeline_script_breakdown_success_populates_scenes_and_clears_sta
         assert win.movie.images_btn.isEnabled()
     finally:
         win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_generate_breakdown_includes_scene_count_hint_when_set(win):
+    from prismcut.core.pipeline import MoviePipeline
+
+    captured = {}
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            captured["system"] = system
+            return '[{"script": "A lighthouse at dawn.", "narration": ""}]'
+
+    pipeline = MoviePipeline(name="Hint prompt test", brief="A lighthouse story.",
+                             script_model="google::gemini-3.6-flash", image_model="fal::img-test",
+                             video_model="fal::vid-test", scene_count_hint=12)
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.movie._retry_script()
+        # Wait on the real settle signal (scenes populated), not just
+        # "work() ran" - work() completes on a background thread before
+        # done() marshals back and resets _script_running, and a later
+        # test's _run_script_breakdown() call would silently no-op if it
+        # ran while that flag was still True from this test.
+        assert _wait_until(lambda: len(win.movie.run.pipeline.scenes) == 1)
+        assert "roughly 12 scene" in captured["system"]
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_generate_breakdown_omits_scene_count_hint_when_unset(win):
+    from prismcut.core.pipeline import MoviePipeline
+
+    captured = {}
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            captured["system"] = system
+            return '[{"script": "A lighthouse at dawn.", "narration": ""}]'
+
+    pipeline = MoviePipeline(name="No hint prompt test", brief="A lighthouse story.",
+                             script_model="google::gemini-3.6-flash", image_model="fal::img-test",
+                             video_model="fal::vid-test")   # scene_count_hint defaults to 0
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.movie._retry_script()
+        assert _wait_until(lambda: len(win.movie.run.pipeline.scenes) == 1)
+        assert "scene(s) total" not in captured["system"]
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_new_pipeline_skips_script_breakdown_when_scenes_were_imported(win, monkeypatch):
+    """Regression guard: _new_pipeline() must not overwrite scenes that
+    arrived via NewPipelineDialog's "Import my own script..." flow by
+    running the normal invent-from-brief breakdown on top of them - and
+    must still kick off narration audio the same way a normal breakdown
+    would."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    imported = MoviePipeline(name="Imported movie", script_model="google::gemini-3.6-flash",
+                             image_model="fal::img-test", video_model="fal::vid-test")
+    imported.scenes = [new_scene(0)]
+    imported.scenes[0].script = "Imported scene, do not overwrite."
+
+    class FakeDialog:
+        def __init__(self, *a, **k):
+            self.pipeline = imported
+
+        def exec(self):
+            return 1
+
+    breakdown_calls = []
+    audio_calls = []
+    monkeypatch.setattr(movie_pipeline_mod, "NewPipelineDialog", FakeDialog)
+    monkeypatch.setattr(movie_pipeline_mod.MoviePipelinePanel, "_run_script_breakdown",
+                        lambda self: breakdown_calls.append(1))
+    monkeypatch.setattr(movie_pipeline_mod.PipelineRun, "run_audio_batch",
+                        lambda self, *a, **k: audio_calls.append(1))
+    try:
+        win.movie._new_pipeline()
+        assert win.movie.run.pipeline is imported
+        assert breakdown_calls == []   # must NOT run invent-from-brief over imported scenes
+        assert audio_calls == [1]      # narration still kicked off, same as a normal breakdown
+        assert imported.scenes[0].script == "Imported scene, do not overwrite."
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_new_pipeline_runs_script_breakdown_when_no_scenes_were_imported(win, monkeypatch):
+    """The normal path (no import) must still run the invent-from-brief
+    breakdown, same as before this feature existed - the regression guard
+    above shouldn't accidentally suppress the everyday case."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline
+
+    fresh = MoviePipeline(name="Fresh movie", brief="A robot learns to paint.",
+                          script_model="google::gemini-3.6-flash",
+                          image_model="fal::img-test", video_model="fal::vid-test")
+
+    class FakeDialog:
+        def __init__(self, *a, **k):
+            self.pipeline = fresh
+
+        def exec(self):
+            return 1
+
+    breakdown_calls = []
+    monkeypatch.setattr(movie_pipeline_mod, "NewPipelineDialog", FakeDialog)
+    monkeypatch.setattr(movie_pipeline_mod.MoviePipelinePanel, "_run_script_breakdown",
+                        lambda self: breakdown_calls.append(1))
+    try:
+        win.movie._new_pipeline()
+        assert breakdown_calls == [1]
+    finally:
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
