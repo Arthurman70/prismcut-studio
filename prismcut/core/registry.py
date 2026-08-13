@@ -41,6 +41,12 @@ class ModelSpec:
     params: list = field(default_factory=list)  # [{name,label,type,min,max,step,choices,default}]
     notes: str = ""
     user: bool = False
+    # True for image models whose provider enforces stricter content
+    # moderation around copyrighted/trademarked characters than the rest
+    # of the registry (as of this writing: Google's Imagen/Gemini-image
+    # line) - pipeline_orchestrator appends a deterministic prompt-safety
+    # suffix when generating against a model with this flag set.
+    strict_ip_policy: bool = False
 
     @property
     def key(self) -> str:
@@ -97,6 +103,7 @@ class Registry:
             id=m["id"], provider=m["provider"], label=m.get("label", ""),
             caps=list(m.get("caps", [])), params=list(m.get("params", [])),
             notes=m.get("notes", ""), user=user,
+            strict_ip_policy=bool(m.get("strict_ip_policy", False)),
         )
 
     # ----------------------------------------------------------------- query

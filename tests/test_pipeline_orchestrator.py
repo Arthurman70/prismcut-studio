@@ -1,14 +1,16 @@
 import pytest
 
-from prismcut.core.pipeline_orchestrator import (_BatchTracker, _parse_breakdown,
+from prismcut.core.pipeline_orchestrator import (_BatchTracker, _augment_prompt_for_model,
+                                                 _is_moderation_failure, _parse_breakdown,
                                                  _seed_scene_durations, resolve_video_plan)
 
 
 class _FakeModel:
-    def __init__(self, key, caps, params=None):
+    def __init__(self, key, caps, params=None, strict_ip_policy=False):
         self._key = key
         self.caps = caps
         self.params = params or []
+        self.strict_ip_policy = strict_ip_policy
 
     @property
     def key(self):
@@ -258,3 +260,41 @@ def test_seed_scene_durations_picks_the_closest_choice():
     near_ten = new_scene(0)
     _seed_scene_durations([near_ten], 9.0, model)
     assert near_ten.video_params["duration"] == "10"
+
+
+# ----------------------------------------------------------- moderation retry
+
+def test_is_moderation_failure_matches_common_provider_wording():
+    assert _is_moderation_failure("Blocked by content moderation policy")
+    assert _is_moderation_failure("SAFETY: possibly safety-filtered")
+    assert _is_moderation_failure("Request rejected")
+    assert _is_moderation_failure("prohibited content detected")
+    assert _is_moderation_failure("BLOCKED")   # case-insensitive
+
+
+def test_is_moderation_failure_does_not_match_unrelated_errors():
+    assert not _is_moderation_failure("network timeout, please retry")
+    assert not _is_moderation_failure("No API key set for OpenAI")
+    assert not _is_moderation_failure("Rate limit exceeded")
+
+
+def test_augment_prompt_for_model_appends_suffix_only_when_flagged():
+    flagged = _FakeModel("google::gemini-3-pro-image", ["image_generate"], strict_ip_policy=True)
+    plain = _FakeModel("openai::gpt-image-2", ["image_generate"], strict_ip_policy=False)
+
+    augmented = _augment_prompt_for_model("A superhero flying over a city", flagged)
+    assert augmented.startswith("A superhero flying over a city")
+    assert "non-copyrighted" in augmented
+
+    assert _augment_prompt_for_model("A superhero flying over a city", plain) == \
+        "A superhero flying over a city"
+
+
+def test_augment_prompt_for_model_tolerates_a_model_with_no_such_attribute():
+    # _FakeModel always defines strict_ip_policy now, but real callers use
+    # getattr(..., False) specifically so a model object that predates this
+    # field (or a lightweight test double) doesn't raise.
+    class BareModel:
+        pass
+
+    assert _augment_prompt_for_model("A scene", BareModel()) == "A scene"

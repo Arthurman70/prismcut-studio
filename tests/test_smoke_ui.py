@@ -1794,7 +1794,7 @@ def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
         def generate_image(self, model_id, prompt, params, refs=None):
             self.calls += 1
             if self.calls == 1:
-                raise RuntimeError("rejected by moderation")
+                raise RuntimeError("network timeout, please retry")
             return [__file__]
 
     pipeline = MoviePipeline(name="Failure test", brief="brief",
@@ -1811,11 +1811,11 @@ def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
     try:
         win.movie.run.regenerate_scene_image(scene.id)
         assert _wait_until(lambda: bool(scene.last_error))
-        assert "rejected by moderation" in scene.last_error
+        assert "network timeout" in scene.last_error
 
         row = win.movie._rows[scene.id]
         assert row.error_label.isVisible()
-        assert "rejected by moderation" in row.error_label.text()
+        assert "network timeout" in row.error_label.text()
         assert row.icon.text() == STATUS_ICONS["error"]
 
         win.movie.run.regenerate_scene_image(scene.id)   # retry, same prompt this time succeeds
@@ -1823,6 +1823,206 @@ def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
         assert scene.last_error == ""
         assert not row.error_label.isVisible()
         assert row.icon.text() != STATUS_ICONS["error"]
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+# --------------------------------------------- moderation retry + copyright suffix
+
+def test_moderation_failure_triggers_rewrite_and_retry_that_succeeds_for_images(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = {"generate": 0, "chat": 0}
+
+    class FailThenRewriteAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            calls["chat"] += 1
+            return "A friendly robot exploring an art studio."
+
+        def generate_image(self, model_id, prompt, params, refs=None):
+            calls["generate"] += 1
+            if calls["generate"] == 1:
+                raise RuntimeError("Blocked by content moderation policy")
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Moderation retry test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.script = "A superhero flying over a city, holding a real trademarked shield."
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FailThenRewriteAdapter()
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: scene.image.active is not None, timeout=10.0)
+        assert scene.last_error == ""
+        assert calls == {"generate": 2, "chat": 1}
+        assert scene.script == "A friendly robot exploring an art studio."   # rewrite persisted
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_moderation_retry_only_happens_once_for_images(win):
+    """The one-shot guarantee: if the retried attempt ALSO looks like a
+    moderation rejection, it must not trigger a second rewrite - exactly
+    one extra chat() call and one extra generate_image() call, then a
+    normal failure, never a loop."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = {"generate": 0, "chat": 0}
+
+    class AlwaysModeratedAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            calls["chat"] += 1
+            return "A rewritten, safer description."
+
+        def generate_image(self, model_id, prompt, params, refs=None):
+            calls["generate"] += 1
+            raise RuntimeError("Rejected: content policy violation")
+
+    pipeline = MoviePipeline(name="Moderation double-fail test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: AlwaysModeratedAdapter()
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: bool(scene.last_error))
+        assert calls == {"generate": 2, "chat": 1}   # exactly one retry, not a loop
+        assert "Rejected again after an automatic prompt rewrite" in scene.last_error
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_moderation_retry_falls_back_cleanly_when_the_rewrite_call_itself_fails(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    class NoChatAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            raise RuntimeError("blocked by safety filters")
+
+    pipeline = MoviePipeline(name="Moderation rewrite-fails test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    # No chat() method at all - the rewrite job's own call raises AttributeError,
+    # exercising the "rewrite call itself failed" fallback, not just "came back empty".
+    win.get_adapter = lambda provider: NoChatAdapter()
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: bool(scene.last_error))
+        assert "automatic rewrite failed" in scene.last_error
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_moderation_failure_triggers_rewrite_and_retry_that_succeeds_for_video(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = {"generate": 0, "chat": 0}
+
+    class FailThenRewriteVideoAdapter:
+        def chat(self, model_id, messages, system="", temperature=0.7, **kwargs):
+            calls["chat"] += 1
+            return "A friendly robot exploring an art studio, safely."
+
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            calls["generate"] += 1
+            if calls["generate"] == 1:
+                raise RuntimeError("flagged by content moderation")
+            return __file__
+
+    pipeline = MoviePipeline(name="Video moderation retry test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.script = "A car chase past a real branded city landmark."
+    win.movie._set_pipeline(pipeline)
+    win.movie.run._ensure_tracks()
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FailThenRewriteVideoAdapter()
+    try:
+        win.movie.run.regenerate_scene_video(scene.id)
+        assert _wait_until(lambda: scene.video.active is not None, timeout=10.0)
+        assert scene.last_error == ""
+        assert calls == {"generate": 2, "chat": 1}
+        assert scene.script == "A friendly robot exploring an art studio, safely."
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_copyright_suffix_appended_for_strict_ip_policy_image_models(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = []
+
+    class CapturingAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            captured.append(prompt)
+            return [__file__]
+
+    pipeline = MoviePipeline(name="Copyright suffix test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",   # strict_ip_policy=True
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.script = "A famous superhero in a red cape."
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: CapturingAdapter()
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: len(captured) == 1)
+        assert captured[0].startswith("A famous superhero in a red cape.")
+        assert "non-copyrighted" in captured[0]
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_copyright_suffix_omitted_for_non_flagged_image_models(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = []
+
+    class CapturingAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            captured.append(prompt)
+            return [__file__]
+
+    pipeline = MoviePipeline(name="No copyright suffix test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="openai::gpt-image-2",   # strict_ip_policy=False
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.script = "A famous superhero in a red cape."
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: CapturingAdapter()
+    try:
+        win.movie.run.regenerate_scene_image(scene.id)
+        assert _wait_until(lambda: len(captured) == 1)
+        assert captured[0] == "A famous superhero in a red cape."
     finally:
         win.get_adapter = saved_get_adapter
         win.movie._set_pipeline(MoviePipeline(name="empty"))

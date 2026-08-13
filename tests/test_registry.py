@@ -60,6 +60,17 @@ def test_kling_text_and_image_to_video_present(registry):
     assert any(p["name"] == "start_image_url" for p in i2v.params)
 
 
+def test_google_image_models_flagged_with_strict_ip_policy(registry):
+    for model_id in ("gemini-3.1-flash-image", "gemini-3-pro-image", "gemini-3.1-flash-lite-image"):
+        m = registry.find("google", model_id)
+        assert m and m.strict_ip_policy, model_id
+
+    # Not blanket-applied to every model - a plain chat/video model should
+    # default to False, same as before this field existed.
+    assert registry.find("google", "gemini-3.6-flash").strict_ip_policy is False
+    assert registry.find("xai", "grok-imagine-video-1.5").strict_ip_policy is False
+
+
 def test_user_overlay_roundtrip(registry):
     registry.save_user_model({"id": "my-model", "provider": "custom",
                               "label": "Mine", "caps": ["chat"], "params": []})

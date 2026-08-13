@@ -117,14 +117,17 @@
         { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "2:3", "3:2"], "default": "1:1" },
         { "name": "image_size", "label": "Size", "type": "choice", "choices": ["1K", "2K"], "default": "1K" }
       ],
+      "strict_ip_policy": true,
       "notes": "The default one-click editor model for the Nano Tools panel." },
     { "id": "gemini-3-pro-image", "provider": "google", "label": "Nano Banana Pro (Gemini 3 Pro Image)", "caps": ["image_generate", "image_edit"],
       "params": [
         { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "2:3", "3:2"], "default": "1:1" },
         { "name": "image_size", "label": "Size", "type": "choice", "choices": ["1K", "2K", "4K"], "default": "2K" }
-      ] },
+      ],
+      "strict_ip_policy": true },
     { "id": "gemini-3.1-flash-lite-image", "provider": "google", "label": "Nano Banana 2 Lite", "caps": ["image_generate", "image_edit"],
-      "params": [ { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4"], "default": "1:1" } ] },
+      "params": [ { "name": "aspect_ratio", "label": "Aspect ratio", "type": "choice", "choices": ["1:1", "16:9", "9:16", "4:3", "3:4"], "default": "1:1" } ],
+      "strict_ip_policy": true },
     { "id": "veo-3.1-generate-preview", "provider": "google", "label": "Veo 3.1", "caps": ["video_generate", "image_to_video"],
       "params": [
         { "name": "duration", "label": "Duration (s)", "type": "int", "min": 4, "max": 8, "default": 8 },

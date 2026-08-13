@@ -53,6 +53,41 @@ def resolve_video_plan(registry, video_model_key: str, lipsync_model_key: str = 
     return VideoPlan(video_model, None, native_audio=False)
 
 
+# Substring hints checked case-insensitively against a generation failure's
+# message - same shape as render.py's _NVENC_FAILURE_HINTS. Unlike that
+# tuple (one stable local tool's vocabulary), this one spans N independent
+# providers' own wording, so expect it to need broader coverage and more
+# upkeep over time - a best-effort classifier, not an exhaustive one.
+_MODERATION_HINTS = ("moderation", "safety", "policy", "blocked", "flagged", "rejected",
+                    "content_policy", "prohibited")
+
+_MODERATION_REWRITE_SYS_PROMPT = (
+    "Rewrite the following AI image/video generation prompt so it is less likely to be "
+    "rejected by automated content moderation - avoid graphic violence, sexual content, real "
+    "trademarked/copyrighted characters, real public figures, or other commonly-restricted "
+    "content - while preserving the same scene, setting, and action as closely as possible. "
+    "Output ONLY the rewritten prompt, no commentary, no quotation marks.")
+
+
+def _is_moderation_failure(msg) -> bool:
+    low = str(msg).lower()
+    return any(hint in low for hint in _MODERATION_HINTS)
+
+
+def _augment_prompt_for_model(base: str, model) -> str:
+    """Deterministic, zero-extra-API-call prompt-safety hint for models
+    whose provider enforces stricter copyright/IP moderation than the rest
+    of the registry (ModelSpec.strict_ip_policy - as of this writing,
+    Google's image models). A plain string append, not a judgment call by
+    this module - consistent with pipeline_orchestrator staying a fixed
+    sequence rather than deciding anything itself. Best-effort only, no
+    guarantee the target provider actually honors it."""
+    if getattr(model, "strict_ip_policy", False):
+        return (base.rstrip() + ", using original non-copyrighted character designs, "
+                "no real branded/trademarked characters")
+    return base
+
+
 class _BatchTracker:
     """Fan-in for 'N jobs queued, do X once every one of them has finished
     (success or fail)' - used for both the image batch and the video/
@@ -283,7 +318,8 @@ class PipelineRun(QObject):
     def _generate_scene_image(self, scene: Scene, model, adapter, tracker: _BatchTracker,
                               prompt_override: str = "", extra_refs: Optional[list] = None,
                               on_settled: Optional[Callable] = None) -> None:
-        prompt = prompt_override or scene.script or self.pipeline.brief
+        base_prompt = prompt_override or scene.script or self.pipeline.brief
+        prompt = _augment_prompt_for_model(base_prompt, model)
         params = {**model.default_params(), **scene.image_params}
         refs = list(extra_refs) if extra_refs else None
 
@@ -292,47 +328,96 @@ class PipelineRun(QObject):
             return adapter.generate_image(model.id, prompt, params, refs)
 
         def done(result):
-            outs = result or []
-            if outs:
-                item = self.win.bin.add_generated(str(outs[0]), {
-                    "provider": model.provider, "model": model.id, "prompt": prompt, "mode": "image",
-                    "source": "pipeline", "pipeline_id": self.pipeline.id, "scene_id": scene.id})
-                scene.image.push(StageAsset(media_id=item.id, prompt=prompt, provider=model.provider,
-                                            model=model.id, source="generated", created=time.time()))
-                scene.last_error = ""
-                if "image" in scene.clip_ids and "video" not in scene.clip_ids:
-                    # A regenerate, not this scene's first-ever image - it's
-                    # already sitting on the timeline, so swap the stale one
-                    # for the fresh one at the same spot rather than leaving
-                    # the old image visible while the new one sits unused in
-                    # the bin. If the scene's video is already finalized,
-                    # leave the timeline alone - only scene.image.active (a
-                    # future video regenerate's input) changes.
-                    self._swap_scene_visual_clip(scene, item, "image", "update image")
-            else:
-                # The job itself didn't raise (so fail() below never fires),
-                # but came back with nothing to show for it - the shape a
-                # silent moderation/content-policy rejection often takes.
-                # Surface it the same as a hard failure rather than leaving
-                # the scene looking merely "still pending".
-                scene.last_error = "No image returned - possibly rejected by moderation or API constraints."
-            self.sceneChanged.emit(scene.id)
-            self.pipeline.save()
-            tracker.one_done(bool(outs), "" if outs else "No image returned.")
-            if on_settled:
-                on_settled()
+            self._finish_scene_image(scene, tracker, model, prompt, result or [], on_settled)
 
         def fail(msg):
-            self.logMessage.emit(f"Scene {scene.index + 1} image failed: {msg}")
-            scene.last_error = msg
-            self.sceneChanged.emit(scene.id)
-            self.pipeline.save()
-            tracker.one_done(False, msg)
-            if on_settled:
-                on_settled()
+            # A silent empty-result (no exception, "outs" just came back
+            # empty) is handled in _finish_scene_image's else-branch, not
+            # here - real moderation rejections from every adapter checked
+            # actually raise, arriving here instead.
+            if _is_moderation_failure(msg):
+                self._retry_scene_image_after_moderation(scene, model, adapter, params, refs,
+                                                          tracker, on_settled)
+                return
+            self._fail_scene_image(scene, tracker, msg, on_settled)
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: image", work, kind="image",
                              on_done=done, on_fail=fail)
+
+    def _finish_scene_image(self, scene: Scene, tracker: _BatchTracker, model, prompt: str,
+                            outs: list, on_settled: Optional[Callable]) -> None:
+        if outs:
+            item = self.win.bin.add_generated(str(outs[0]), {
+                "provider": model.provider, "model": model.id, "prompt": prompt, "mode": "image",
+                "source": "pipeline", "pipeline_id": self.pipeline.id, "scene_id": scene.id})
+            scene.image.push(StageAsset(media_id=item.id, prompt=prompt, provider=model.provider,
+                                        model=model.id, source="generated", created=time.time()))
+            scene.last_error = ""
+            if "image" in scene.clip_ids and "video" not in scene.clip_ids:
+                # A regenerate, not this scene's first-ever image - it's
+                # already sitting on the timeline, so swap the stale one
+                # for the fresh one at the same spot rather than leaving
+                # the old image visible while the new one sits unused in
+                # the bin. If the scene's video is already finalized,
+                # leave the timeline alone - only scene.image.active (a
+                # future video regenerate's input) changes.
+                self._swap_scene_visual_clip(scene, item, "image", "update image")
+        else:
+            # The job itself didn't raise (so fail() never fires), but came
+            # back with nothing to show for it - the shape a silent
+            # moderation/content-policy rejection often takes. Surface it
+            # the same as a hard failure rather than leaving the scene
+            # looking merely "still pending".
+            scene.last_error = "No image returned - possibly rejected by moderation or API constraints."
+        self.sceneChanged.emit(scene.id)
+        self.pipeline.save()
+        tracker.one_done(bool(outs), "" if outs else "No image returned.")
+        if on_settled:
+            on_settled()
+
+    def _fail_scene_image(self, scene: Scene, tracker: _BatchTracker, msg: str,
+                          on_settled: Optional[Callable]) -> None:
+        self.logMessage.emit(f"Scene {scene.index + 1} image failed: {msg}")
+        scene.last_error = msg
+        self.sceneChanged.emit(scene.id)
+        self.pipeline.save()
+        tracker.one_done(False, msg)
+        if on_settled:
+            on_settled()
+
+    def _retry_scene_image_after_moderation(self, scene: Scene, model, adapter, params: dict,
+                                            refs, tracker: _BatchTracker,
+                                            on_settled: Optional[Callable]) -> None:
+        """One bounded retry: ask the script model to rewrite the scene's
+        prompt to dodge whatever tripped moderation, then re-attempt image
+        generation ONCE more via fresh, non-retrying closures. The one-shot
+        guarantee comes from retry_done/retry_fail below calling _finish_
+        scene_image/_fail_scene_image directly - neither checks for
+        moderation hints or ever re-enters this method - not from any
+        tracked "already retried" state."""
+        def on_rewritten(rewritten: str) -> None:
+            retry_prompt = _augment_prompt_for_model(rewritten, model)
+
+            def retry_work(job):
+                job.progress(-1, f"Scene {scene.index + 1}: image (retry after moderation)")
+                return adapter.generate_image(model.id, retry_prompt, params, refs)
+
+            def retry_done(result):
+                self._finish_scene_image(scene, tracker, model, retry_prompt, result or [], on_settled)
+
+            def retry_fail(msg):
+                self._fail_scene_image(
+                    scene, tracker, f"Rejected again after an automatic prompt rewrite: {msg}",
+                    on_settled)
+
+            self.win.jobs.submit(f"Movie scene {scene.index + 1}: image (retry)", retry_work,
+                                 kind="image", on_done=retry_done, on_fail=retry_fail)
+
+        def on_rewrite_failed(reason: str) -> None:
+            self._fail_scene_image(scene, tracker, f"Rejected by moderation, and {reason}.",
+                                   on_settled)
+
+        self._rewrite_prompt_for_moderation(scene, on_rewritten, on_rewrite_failed)
 
     def set_scene_image_override(self, scene_id: str, path: str) -> None:
         """Draftboard drop: register a user-supplied image as this scene's
@@ -557,33 +642,120 @@ class PipelineRun(QObject):
             return video_adapter.generate_video(video_model.id, prompt, params, **kwargs)
 
         def done(video_path):
-            item = self.win.bin.add_generated(str(video_path), {
-                "provider": video_model.provider, "model": video_model.id, "prompt": prompt,
-                "mode": "video", "source": "pipeline", "pipeline_id": self.pipeline.id,
-                "scene_id": scene.id})
-            scene.video.push(StageAsset(media_id=item.id, prompt=prompt, provider=video_model.provider,
-                                        model=video_model.id, source="generated", created=time.time()))
-            scene.last_error = ""
-            if plan.lipsync_model and scene.use_lipsync:
-                self._chain_lipsync(scene, item, plan.lipsync_model, tracker, on_settled=on_settled)
-            else:
-                self._swap_interim_for_final(scene, item)
-                self.sceneChanged.emit(scene.id)
-                tracker.one_done(True)
-                if on_settled:
-                    on_settled()
+            self._finish_scene_video(scene, plan, tracker, prompt, video_path, on_settled)
 
         def fail(msg):
-            self.logMessage.emit(f"Scene {scene.index + 1} video failed: {msg}")
-            scene.last_error = msg
-            self.pipeline.save()
-            self.sceneChanged.emit(scene.id)
-            tracker.one_done(False, msg)
-            if on_settled:
-                on_settled()
+            if _is_moderation_failure(msg):
+                self._retry_scene_video_after_moderation(scene, plan, video_adapter, img_item,
+                                                          native_audio_path, params, tracker,
+                                                          on_settled)
+                return
+            self._fail_scene_video(scene, tracker, msg, on_settled)
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: video", work, kind="video",
                              on_done=done, on_fail=fail)
+
+    def _finish_scene_video(self, scene: Scene, plan: VideoPlan, tracker: _BatchTracker,
+                            prompt: str, video_path, on_settled: Optional[Callable]) -> None:
+        video_model = plan.video_model
+        item = self.win.bin.add_generated(str(video_path), {
+            "provider": video_model.provider, "model": video_model.id, "prompt": prompt,
+            "mode": "video", "source": "pipeline", "pipeline_id": self.pipeline.id,
+            "scene_id": scene.id})
+        scene.video.push(StageAsset(media_id=item.id, prompt=prompt, provider=video_model.provider,
+                                    model=video_model.id, source="generated", created=time.time()))
+        scene.last_error = ""
+        if plan.lipsync_model and scene.use_lipsync:
+            self._chain_lipsync(scene, item, plan.lipsync_model, tracker, on_settled=on_settled)
+        else:
+            self._swap_interim_for_final(scene, item)
+            self.sceneChanged.emit(scene.id)
+            tracker.one_done(True)
+            if on_settled:
+                on_settled()
+
+    def _fail_scene_video(self, scene: Scene, tracker: _BatchTracker, msg: str,
+                          on_settled: Optional[Callable]) -> None:
+        self.logMessage.emit(f"Scene {scene.index + 1} video failed: {msg}")
+        scene.last_error = msg
+        self.pipeline.save()
+        self.sceneChanged.emit(scene.id)
+        tracker.one_done(False, msg)
+        if on_settled:
+            on_settled()
+
+    def _retry_scene_video_after_moderation(self, scene: Scene, plan: VideoPlan, video_adapter,
+                                            img_item, native_audio_path, params: dict,
+                                            tracker: _BatchTracker,
+                                            on_settled: Optional[Callable]) -> None:
+        """Video's version of _retry_scene_image_after_moderation - same
+        one-shot rewrite-and-retry shape via the shared _rewrite_prompt_
+        for_moderation helper, no copyright-suffix step since strict_ip_
+        policy is scoped to image models only."""
+        video_model = plan.video_model
+
+        def on_rewritten(rewritten: str) -> None:
+            def retry_work(job):
+                job.progress(-1, f"Scene {scene.index + 1}: video (retry after moderation)")
+                kwargs = {"image": img_item.path if img_item else None,
+                         "progress": job.progress, "should_cancel": lambda: job.cancelled}
+                if native_audio_path:
+                    kwargs["audio"] = native_audio_path
+                return video_adapter.generate_video(video_model.id, rewritten, params, **kwargs)
+
+            def retry_done(video_path):
+                self._finish_scene_video(scene, plan, tracker, rewritten, video_path, on_settled)
+
+            def retry_fail(msg):
+                self._fail_scene_video(
+                    scene, tracker, f"Rejected again after an automatic prompt rewrite: {msg}",
+                    on_settled)
+
+            self.win.jobs.submit(f"Movie scene {scene.index + 1}: video (retry)", retry_work,
+                                 kind="video", on_done=retry_done, on_fail=retry_fail)
+
+        def on_rewrite_failed(reason: str) -> None:
+            self._fail_scene_video(scene, tracker, f"Rejected by moderation, and {reason}.",
+                                   on_settled)
+
+        self._rewrite_prompt_for_moderation(scene, on_rewritten, on_rewrite_failed)
+
+    def _rewrite_prompt_for_moderation(self, scene: Scene, on_done: Callable[[str], None],
+                                       on_fail: Callable[[str], None]) -> None:
+        """Shared by the image/video moderation-retry paths: asks the
+        pipeline's own script model to rewrite the scene's prompt to avoid
+        commonly-moderated content, persists the rewrite to scene.script
+        (so the user sees what changed and future regenerates start from
+        it), then hands the rewritten text to on_done. on_fail covers both
+        "no script model configured" and the rewrite call itself failing -
+        either way the caller falls back to normal failure handling, never
+        a second retry."""
+        rewrite_model = self.win.registry.by_key(self.pipeline.script_model)
+        if not rewrite_model:
+            on_fail("no script model is available to rewrite the prompt")
+            return
+        rewrite_adapter = self.win.get_adapter(rewrite_model.provider)
+        original_prompt = scene.script or self.pipeline.brief
+
+        def work(job):
+            job.progress(-1, f"Scene {scene.index + 1}: rewriting prompt after moderation rejection")
+            return rewrite_adapter.chat(rewrite_model.id, [ChatMessage("user", original_prompt)],
+                                        system=_MODERATION_REWRITE_SYS_PROMPT, temperature=0.5)
+
+        def done(result):
+            rewritten = str(result).strip()
+            if not rewritten:
+                on_fail("the automatic rewrite came back empty")
+                return
+            scene.script = rewritten
+            self.pipeline.save()
+            on_done(rewritten)
+
+        def fail(msg):
+            on_fail(f"the automatic rewrite failed: {msg}")
+
+        self.win.jobs.submit(f"Movie scene {scene.index + 1}: rewriting prompt", work,
+                             kind="chat", on_done=done, on_fail=fail)
 
     def _chain_lipsync(self, scene: Scene, video_item, lipsync_model, tracker: _BatchTracker,
                        on_settled: Optional[Callable] = None) -> None:
