@@ -2,13 +2,14 @@
 razor, snapping, zoom, playhead scrubbing and a lightweight preview player."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QPainter, QPen)
 from PySide6.QtWidgets import (QButtonGroup, QGraphicsItem, QGraphicsLineItem,
                                QGraphicsRectItem, QGraphicsScene, QGraphicsView,
                                QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea,
                                QSlider, QToolButton, QVBoxLayout, QWidget)
 
+from ...core import media as media_utils
 from ...core.project import Clip, Project
 from ...core.undo_commands import AddOrRemoveItemCommand, ChangePropertiesCommand
 from .. import theme
@@ -174,11 +175,15 @@ class TimelineView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.setBackgroundBrush(QColor(theme.BG))
-        # Rubber-band only engages when the press starts on empty scene
-        # space (Qt gives movable/selectable items first refusal on their
-        # own press events), so this is additive to the existing per-clip
-        # drag/ctrl-click-multi-select and doesn't change either.
-        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        # Empty-space press+drag scrubs the playhead (see mousePressEvent/
+        # mouseMoveEvent below) instead of rubber-band-selecting - Qt gives
+        # movable/selectable items first refusal on their own press events,
+        # so clicking directly on a clip is unaffected either way, and
+        # shift/ctrl+click there still extends the selection (QGraphicsScene's
+        # own native behavior, independent of this view's dragMode).
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self._scrubbing = False
+        self.setAcceptDrops(True)
 
     def drawBackground(self, p: QPainter, rect: QRectF):
         super().drawBackground(p, rect)
@@ -199,12 +204,38 @@ class TimelineView(QGraphicsView):
             p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
             t += step
 
+    def _seek_to(self, viewport_pos) -> None:
+        t = self.mapToScene(viewport_pos).x() / self.timeline.pps
+        self.timeline.set_playhead(max(0.0, t))
+
     def mousePressEvent(self, ev):
         item = self.itemAt(ev.position().toPoint())
         if item is None and ev.button() == Qt.MouseButton.LeftButton:
-            t = self.mapToScene(ev.position().toPoint()).x() / self.timeline.pps
-            self.timeline.set_playhead(max(0.0, t))
+            self._scrubbing = True
+            self._seek_to(ev.position().toPoint())
+            ev.accept()
+            return
+        if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            # QGraphicsItem's own click-selection only treats Control as the
+            # multi-select modifier - remap Shift onto it here so shift-click
+            # also extends the selection, per the user-facing convention this
+            # app wants (Control still works too, unchanged).
+            ev.setModifiers(ev.modifiers() | Qt.KeyboardModifier.ControlModifier)
         super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._scrubbing:
+            self._seek_to(ev.position().toPoint())
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._scrubbing:
+            self._scrubbing = False
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
 
     def wheelEvent(self, ev):
         if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -229,6 +260,71 @@ class TimelineView(QGraphicsView):
             menu.addAction("⇤ Close gap",
                            lambda: self.timeline.close_gap_after(track.id, max(0.0, t)))
         menu.exec(ev.globalPos())
+
+    # ------------------------------------------------------------- drag/drop
+    def _drag_ok(self, ev) -> bool:
+        md = ev.mimeData()
+        return bool(md.hasUrls() or md.hasFormat(media_utils.MEDIA_ID_MIME_TYPE))
+
+    def dragEnterEvent(self, ev):
+        if self._drag_ok(ev):
+            ev.acceptProposedAction()
+        else:
+            ev.ignore()
+
+    def dragMoveEvent(self, ev):
+        # QGraphicsView's own dragMoveEvent would otherwise forward to
+        # whatever's under the cursor and may not recognize either mime
+        # type, showing a "forbidden" cursor throughout the drag - accept
+        # explicitly every move, not just on entry.
+        if self._drag_ok(ev):
+            ev.acceptProposedAction()
+        else:
+            ev.ignore()
+
+    def dropEvent(self, ev):
+        if not self._drag_ok(ev):
+            ev.ignore()
+            return
+        md = ev.mimeData()
+        project = self.timeline.project
+        scene_pos = self.mapToScene(ev.position().toPoint())
+        drop_track = self.timeline.track_at_position(scene_pos.y())
+        t = self.timeline.snap_time(max(0.0, scene_pos.x() / self.timeline.pps))
+
+        items = []
+        if md.hasUrls():
+            paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+            for p in paths:
+                if media_utils.is_accepted(p, "image", "video", "audio"):
+                    items.append(project.add_media(p))
+        if md.hasFormat(media_utils.MEDIA_ID_MIME_TYPE):
+            raw = bytes(md.data(media_utils.MEDIA_ID_MIME_TYPE)).decode("utf-8")
+            for media_id in raw.split("\n"):
+                item = project.media.get(media_id)
+                if item:
+                    items.append(item)
+
+        if not items:
+            ev.ignore()
+            return
+
+        self.timeline.undo_stack.beginMacro(
+            f"Drop {items[0].label or 'media'} onto timeline" if len(items) == 1
+            else f"Drop {len(items)} items onto timeline")
+        cursor = t
+        for item in items:
+            # Only use the track under the drop point if its kind actually
+            # matches - dropping an audio file over a video track (or vice
+            # versa) falls back to add_media_at_playhead's own same-kind
+            # default instead of forcing a kind mismatch onto that track.
+            wants_audio = item.kind == "audio"
+            tr_id = drop_track.id if drop_track and (drop_track.kind == "audio") == wants_audio else ""
+            clip = self.timeline.add_media_at_playhead(item.id, tr_id, cursor)
+            if clip:
+                cursor += clip.duration
+        self.timeline.undo_stack.endMacro()
+        ev.acceptProposedAction()
 
 
 MARKER_COLORS = [
@@ -481,6 +577,10 @@ class TimelineWidget(QWidget):
         self._preview_timer = QTimer(self)
         self._preview_timer.setInterval(66)
         self._preview_timer.timeout.connect(self._preview_tick)
+        # Real elapsed time between ticks, not a fixed 0.066s assumption -
+        # a busy GUI thread delaying a tick would otherwise make "Preview"
+        # play back slower than real time without this.
+        self._preview_elapsed = QElapsedTimer()
 
         self.setMinimumHeight(200)
         self.refresh(True)
@@ -564,26 +664,45 @@ class TimelineWidget(QWidget):
         self.refresh(True)
 
     def refresh(self, rebuild_headers: bool = False):
-        for item in self._items.values():
-            self.scene.removeItem(item)
-        self._items.clear()
-        if rebuild_headers:
-            while self.header_lay.count():
-                w = self.header_lay.takeAt(0).widget()
-                if w:
-                    w.deleteLater()
-            for tr in self.ordered_tracks():
-                self.header_lay.addWidget(TrackHeader(tr, self))
-            self.header_lay.addStretch(1)
-        dur = max(self.project.duration() + 60.0, 120.0)
-        self.scene.setSceneRect(0, 0, dur * self.pps, self.total_height())
-        for c in self.project.clips.values():
-            tr = self.project.track(c.track_id)
-            if not tr:
-                continue
-            item = ClipItem(c, self, tr.kind)
-            self.scene.addItem(item)
-            self._items[c.id] = item
+        # commit_item() calls this on every clip press-release (even a
+        # plain click with no movement), which rebuilds every ClipItem from
+        # scratch - without capturing/reapplying selection here, a clip
+        # would visibly deselect itself the instant the mouse released.
+        # Signals are blocked for the whole rebuild: removeItem()/
+        # setSelected() would otherwise fire scene.selectionChanged mid-
+        # rebuild (once per old item cleared, once per item reselected)
+        # with the scene in a transient, half-rebuilt state - downstream
+        # (TimelineWidget.selectionChanged -> MainWindow._clip_selected ->
+        # effects/audio panels) only ever needs to know the final state,
+        # emitted once after rebuilding finishes below.
+        selected_ids = {item.clip.id for item in self._items.values() if item.isSelected()}
+        self.scene.blockSignals(True)
+        try:
+            for item in self._items.values():
+                self.scene.removeItem(item)
+            self._items.clear()
+            if rebuild_headers:
+                while self.header_lay.count():
+                    w = self.header_lay.takeAt(0).widget()
+                    if w:
+                        w.deleteLater()
+                for tr in self.ordered_tracks():
+                    self.header_lay.addWidget(TrackHeader(tr, self))
+                self.header_lay.addStretch(1)
+            dur = max(self.project.duration() + 60.0, 120.0)
+            self.scene.setSceneRect(0, 0, dur * self.pps, self.total_height())
+            for c in self.project.clips.values():
+                tr = self.project.track(c.track_id)
+                if not tr:
+                    continue
+                item = ClipItem(c, self, tr.kind)
+                if c.id in selected_ids:
+                    item.setSelected(True)
+                self.scene.addItem(item)
+                self._items[c.id] = item
+        finally:
+            self.scene.blockSignals(False)
+        self._sel_changed()
         self._place_playhead()
         self.ruler.update()
         self.view.viewport().update()
@@ -920,10 +1039,12 @@ class TimelineWidget(QWidget):
         else:
             if self.playhead_time >= self.project.duration():
                 self.set_playhead(0.0)
+            self._preview_elapsed.start()
             self._preview_timer.start()
             self.btn_play.setText("⏸ Pause")
 
     def _preview_tick(self):
-        self.set_playhead(self.playhead_time + 0.066)
+        dt = self._preview_elapsed.restart() / 1000.0
+        self.set_playhead(self.playhead_time + dt)
         if self.playhead_time >= self.project.duration():
             self.toggle_preview()

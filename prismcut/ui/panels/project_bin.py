@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QMimeData, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QLineEdit,
                                QMenu, QPushButton, QTreeWidget, QTreeWidgetItem,
@@ -29,6 +29,27 @@ LABEL_COLORS = [
 # top-level tree item as a bin header rather than a kind-based group, so
 # the context menu handler can tell them apart with a single lookup.
 _BIN_HEADER_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+class MediaTree(QTreeWidget):
+    """QTreeWidget with a custom mimeData() so dragging item(s) out (to the
+    Timeline) carries plain media ids (media.MEDIA_ID_MIME_TYPE) instead of
+    Qt's own internal row/column format - keeps the Timeline-side drop
+    handler trivial and fully decoupled from QTreeWidget internals. Use
+    DragDropMode.DragOnly (set on the instance, not here) rather than
+    setDragEnabled(True) with a drop-accepting mode - this tree must never
+    accept drops onto itself, since that would compete with the panel-level
+    DropAcceptor already handling OS file drops (see the comment where the
+    tree is constructed)."""
+
+    def mimeData(self, items):
+        ids = [it.data(0, Qt.ItemDataRole.UserRole) for it in items]
+        ids = [i for i in ids if i]   # bin-header nodes carry no media_id
+        if not ids:
+            return super().mimeData(items)
+        md = QMimeData()
+        md.setData(media_utils.MEDIA_ID_MIME_TYPE, "\n".join(ids).encode("utf-8"))
+        return md
 
 
 class ProjectBin(QWidget):
@@ -81,15 +102,18 @@ class ProjectBin(QWidget):
         self.search.textChanged.connect(self._filter)
         lay.addWidget(self.search)
 
-        self.tree = QTreeWidget()
+        self.tree = MediaTree()
         self.tree.setHeaderHidden(True)
         self.tree.setIconSize(QSize(64, 40))
-        self.tree.setDragEnabled(False)
-        # Not enabling internal drag-to-reorder here: QAbstractItemView's own
-        # drop handling would compete with the OS-file-drop DropAcceptor
-        # below for drop events landing on the tree, risking silently
-        # breaking file import. Reordering would need a custom
+        # DragOnly (not DragDrop/InternalMove): items can be dragged OUT
+        # (to the Timeline - see MediaTree.mimeData above) but this tree
+        # never accepts drops onto itself. That distinction matters -
+        # accepting drops here would let QAbstractItemView's own drop
+        # handling compete with the OS-file-drop DropAcceptor below for
+        # drop events landing on the tree, risking silently breaking file
+        # import. Internal drag-to-reorder would need a custom
         # dropMimeData() override to disambiguate the two - not attempted.
+        self.tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         QShortcut(QKeySequence.StandardKey.SelectAll, self.tree,
                  activated=self._select_all_media, context=Qt.ShortcutContext.WidgetShortcut)

@@ -13,6 +13,12 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".wmv"}
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus", ".wma", ".aiff"}
 
+# Custom drag mime type carrying newline-joined MediaItem ids, used to drag
+# items out of the Project Bin's tree onto the Timeline - lives here (Qt-free
+# core) rather than in either UI file so neither has to import the other
+# just for this one constant.
+MEDIA_ID_MIME_TYPE = "application/x-prismcut-media-id"
+
 
 def ffmpeg_path() -> Optional[str]:
     return shutil.which("ffmpeg")

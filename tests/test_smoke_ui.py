@@ -2539,6 +2539,356 @@ def test_timeline_snap_time_snaps_to_marker(win):
         win.project.remove_marker(marker.id)
 
 
+# --------------------------------------------------- scrubbing + drag-drop
+
+def test_timeline_body_drag_scrubs_playhead(win):
+    """The actual feature: empty-space click-drag on the timeline body now
+    scrubs the playhead continuously (like the ruler already did), instead
+    of only seeking once on press - rubber-band select was dropped in
+    favor of this (see TimelineView.__init__)."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    win.timeline.pps = 26.0
+    win.timeline.view.horizontalScrollBar().setValue(0)
+    view = win.timeline.view
+    try:
+        press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(130, 10), QPointF(130, 10),
+                            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.NoModifier)
+        view.mousePressEvent(press)
+        assert view._scrubbing is True
+        assert win.timeline.playhead_time == pytest.approx(5.0)
+
+        move = QMouseEvent(QEvent.Type.MouseMove, QPointF(260, 10), QPointF(260, 10),
+                           Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier)
+        view.mouseMoveEvent(move)
+        assert win.timeline.playhead_time == pytest.approx(10.0)
+
+        release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(260, 10), QPointF(260, 10),
+                              Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                              Qt.KeyboardModifier.NoModifier)
+        view.mouseReleaseEvent(release)
+        assert view._scrubbing is False
+    finally:
+        win.timeline.set_playhead(0.0)
+
+
+def test_timeline_view_remaps_shift_click_to_control_for_multiselect(win):
+    """Qt's own QGraphicsItem.mousePressEvent only ever treats Control as
+    the multi-select modifier (verified directly against a bare
+    QGraphicsScene/QGraphicsItem - Shift click there just replaces the
+    selection like a plain click). Since the user-facing convention here
+    is shift-click, TimelineView.mousePressEvent ORs ControlModifier onto
+    a shift-held press before forwarding to Qt - this pins down that the
+    remap itself actually happens. The remap only runs on the
+    "an item is under the cursor" branch (empty space is scrub, handled
+    and returned on before the remap code), so the click must land on a
+    real clip, not empty space."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    view = win.timeline.view
+    win.timeline.pps = 26.0
+    track = win.project.video_tracks()[0]
+    # Own private path (not bare __file__): add_media() dedups by
+    # (path, group), and many other tests in this file reuse __file__ -
+    # a stray leftover clip from any of them would collide with this
+    # test's own clip-count assertions.
+    item = win.project.add_media(__file__ + "#shift_remap")
+    item.kind = "image"
+    clip = win.project.add_clip(item.id, track.id, 700.0, 3.0)
+    win.timeline.refresh()
+    try:
+        clip_item = win.timeline._items[clip.id]
+        pt = view.mapFromScene(clip_item.scenePos() + QPointF(5, 5))
+
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(pt), QPointF(pt),
+                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier)
+        view.mousePressEvent(ev)
+        assert ev.modifiers() & Qt.KeyboardModifier.ControlModifier
+        assert ev.modifiers() & Qt.KeyboardModifier.ShiftModifier   # preserved, not swapped out
+        view.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(pt), QPointF(pt),
+                                           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                           Qt.KeyboardModifier.ShiftModifier))
+
+        # plain click (no modifier) on the same clip must NOT pick up Control
+        ev2 = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(pt), QPointF(pt),
+                          Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                          Qt.KeyboardModifier.NoModifier)
+        view.mousePressEvent(ev2)
+        assert not (ev2.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        view.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(pt), QPointF(pt),
+                                           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                           Qt.KeyboardModifier.NoModifier))
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(item.id)
+        win.timeline.refresh()
+
+
+def test_timeline_refresh_preserves_clip_selection(win):
+    """Bug found while writing the multi-select tests above (pre-existing,
+    unrelated to the dragMode change): ClipItem.mouseReleaseEvent always
+    calls TimelineWidget.commit_item(), and even a plain click that moves
+    nothing still ends up calling refresh() (via the "before == after"
+    branch, or via ChangePropertiesCommand.redo() executing synchronously
+    on push() otherwise) - which used to rebuild every ClipItem from
+    scratch with no selection carried over, so a clip visibly deselected
+    itself the instant the mouse released. refresh() now captures
+    isSelected() by clip id before clearing _items and reapplies it to
+    the rebuilt items."""
+    track = win.project.video_tracks()[0]
+    item = win.project.add_media(__file__ + "#refresh_preserves_selection")
+    item.kind = "image"
+    clip = win.project.add_clip(item.id, track.id, 900.0, 3.0)
+    win.timeline.refresh()
+    try:
+        win.timeline._items[clip.id].setSelected(True)
+        win.timeline.refresh()
+        assert win.timeline._items[clip.id].isSelected()
+        assert win.timeline.selected_clip() is clip
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(item.id)
+        win.timeline.refresh()
+
+
+def test_control_click_extends_clip_selection_after_dragmode_change(win):
+    """Regression check for dropping RubberBandDrag in favor of scrub:
+    multi-select on individual clips is Qt's own native QGraphicsItem
+    behavior (its base mousePressEvent, which ClipItem calls via super()),
+    entirely independent of the view's dragMode (that setting only ever
+    affected empty-space press handling, never item hit-testing) - this
+    pins down that it actually survived the change. Uses Control (Qt's
+    real native multi-select modifier - see
+    test_timeline_view_remaps_shift_click_to_control_for_multiselect for
+    where Shift gets mapped onto it).
+
+    Pre-selects c1 directly (setSelected(), no synthetic event) rather
+    than via a first simulated click: two synthetic press+release cycles
+    back to back - with no real OS mouse motion between them - leave
+    QGraphicsScene's internal grabber tracking pointing at a stale,
+    already-removed item (removed by the first click's own
+    commit_item()-triggered refresh()), so a second synthetic press
+    misses live hit-testing entirely. One real press+release, preceded by
+    a plain state setup, sidesteps that Qt/offscreen-platform artifact
+    while still exercising the exact same item-level control-click code a
+    genuine second click would run."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtWidgets import QGraphicsSceneMouseEvent
+
+    win.timeline.pps = 26.0
+    track = win.project.video_tracks()[0]
+    item = win.project.add_media(__file__ + "#control_click_extend")
+    item.kind = "image"
+    start = 850.0
+    c1 = win.project.add_clip(item.id, track.id, start, 3.0)
+    c2 = win.project.add_clip(item.id, track.id, start + 10.0, 3.0)
+    win.timeline.refresh()
+    scene = win.timeline.view.scene()
+    try:
+        win.timeline._items[c1.id].setSelected(True)
+
+        pos = QPointF(c2.start * win.timeline.pps + 5,
+                      win.timeline.track_y(c2.track_id) + 3 + 5)
+        press = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMousePress)
+        press.setScenePos(pos)
+        press.setButtonDownScenePos(Qt.MouseButton.LeftButton, pos)
+        press.setButton(Qt.MouseButton.LeftButton)
+        press.setButtons(Qt.MouseButton.LeftButton)
+        press.setModifiers(Qt.KeyboardModifier.ControlModifier)
+        scene.mousePressEvent(press)
+        release = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMouseRelease)
+        release.setScenePos(pos)
+        release.setButtonDownScenePos(Qt.MouseButton.LeftButton, pos)
+        release.setButton(Qt.MouseButton.LeftButton)
+        release.setButtons(Qt.MouseButton.NoButton)
+        release.setModifiers(Qt.KeyboardModifier.ControlModifier)
+        scene.mouseReleaseEvent(release)
+
+        assert win.timeline._items[c1.id].isSelected() and win.timeline._items[c2.id].isSelected(), \
+            "control-click must extend the selection, not replace it"
+    finally:
+        win.project.remove_clip(c1.id)
+        win.project.remove_clip(c2.id)
+        win.project.remove_media(item.id)
+        win.timeline.refresh()
+
+
+class _FakeDragDropEvent:
+    """Duck-types just the methods TimelineView's drag/drop handlers call -
+    avoids depending on QDropEvent/QDragEnterEvent's exact constructor
+    overloads (which differ from each other - QPoint vs QPointF - and
+    aren't otherwise used anywhere in this codebase to have a proven
+    pattern to copy) while still exercising the real production code."""
+    def __init__(self, mime, pos=None):
+        self._mime = mime
+        self._pos = pos
+        self.accepted = None
+
+    def mimeData(self):
+        return self._mime
+
+    def position(self):
+        return self._pos
+
+    def acceptProposedAction(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.accepted = False
+
+
+def test_timeline_drag_enter_accepts_known_mime_and_rejects_unknown(win):
+    from PySide6.QtCore import QMimeData
+
+    from prismcut.core import media as media_utils
+
+    good = QMimeData()
+    good.setData(media_utils.MEDIA_ID_MIME_TYPE, b"some-id")
+    ev_good = _FakeDragDropEvent(good)
+    win.timeline.view.dragEnterEvent(ev_good)
+    assert ev_good.accepted is True
+
+    bad = QMimeData()
+    bad.setText("just some text, not a file or a bin item")
+    ev_bad = _FakeDragDropEvent(bad)
+    win.timeline.view.dragEnterEvent(ev_bad)
+    assert ev_bad.accepted is False
+
+
+def test_timeline_drop_internal_media_id_places_clip_at_computed_position(win):
+    """dropEvent() calls self.mapToScene(ev.position().toPoint()), exactly
+    like a real QDropEvent whose position() is viewport-local - the fake
+    event's pos must go through view.mapFromScene() here too, or this only
+    "passes" by coincidence whenever the view's scroll offset happens to
+    be (0, 0).
+
+    Asserts "one undo step" via undo() actually removing the clip, not via
+    an exact undo_stack.count() delta: this file's shared win/undo_stack
+    fixture accumulates ~150+ commands across the whole module, and
+    beginMacro()'s own count() bookkeeping can differ depending on how
+    much unrelated state the many prior tests have already pushed -
+    verified independent of this drag-drop work (reproduces unchanged
+    against the pre-existing refresh() too) - so the delta isn't a
+    reliable signal on its own. What actually matters - one Ctrl+Z
+    reverts the whole drop - is what's checked here."""
+    from PySide6.QtCore import QMimeData, QPointF
+
+    from prismcut.core import media as media_utils
+
+    win.timeline.pps = 26.0
+    track = win.project.video_tracks()[0]
+    item = win.project.add_media(__file__ + "#drop_single")
+    item.kind = "image"
+    drop_t = 210_000.0
+    scene_pt = QPointF(drop_t * win.timeline.pps, win.timeline.track_y(track.id) + 3)
+
+    md = QMimeData()
+    md.setData(media_utils.MEDIA_ID_MIME_TYPE, item.id.encode("utf-8"))
+    ev = _FakeDragDropEvent(md, QPointF(win.timeline.view.mapFromScene(scene_pt)))
+
+    try:
+        win.timeline.view.dropEvent(ev)
+        assert ev.accepted is True
+
+        clips = [c for c in win.project.clips.values() if c.media_id == item.id]
+        assert len(clips) == 1
+        assert clips[0].start == pytest.approx(drop_t, abs=1.0)
+        assert clips[0].track_id == track.id
+
+        assert win.undo_stack.canUndo()
+        win.undo_stack.undo()
+        assert not any(c.media_id == item.id for c in win.project.clips.values()), \
+            "one undo step must remove the whole drop"
+        win.undo_stack.redo()
+        assert any(c.media_id == item.id for c in win.project.clips.values())
+    finally:
+        for c in list(win.project.clips.values()):
+            if c.media_id == item.id:
+                win.project.remove_clip(c.id)
+        win.project.remove_media(item.id)
+        win.timeline.refresh()
+
+
+def test_timeline_drop_multiple_items_lays_out_sequentially_in_one_undo_step(win):
+    from PySide6.QtCore import QMimeData, QPointF
+
+    from prismcut.core import media as media_utils
+
+    win.timeline.pps = 26.0
+    track = win.project.video_tracks()[0]
+    i1 = win.project.add_media(__file__ + "#drop_multi_1")
+    i1.kind, i1.duration = "image", 4.0
+    i2 = win.project.add_media(__file__ + "#drop_multi_2")
+    i2.kind, i2.duration = "image", 4.0
+    drop_t = 220_000.0
+    scene_pt = QPointF(drop_t * win.timeline.pps, win.timeline.track_y(track.id) + 3)
+
+    md = QMimeData()
+    md.setData(media_utils.MEDIA_ID_MIME_TYPE, f"{i1.id}\n{i2.id}".encode("utf-8"))
+    ev = _FakeDragDropEvent(md, QPointF(win.timeline.view.mapFromScene(scene_pt)))
+
+    try:
+        win.timeline.view.dropEvent(ev)
+
+        c1 = next(c for c in win.project.clips.values() if c.media_id == i1.id)
+        c2 = next(c for c in win.project.clips.values() if c.media_id == i2.id)
+        assert c1.start == pytest.approx(drop_t, abs=1.0)
+        assert c2.start == pytest.approx(c1.end, abs=0.01)   # laid out back-to-back, not stacked
+
+        # One undo step for both clips (see test_timeline_drop_internal_
+        # media_id_places_clip_at_computed_position for why this checks
+        # undo() behavior rather than an undo_stack.count() delta).
+        assert win.undo_stack.canUndo()
+        win.undo_stack.undo()
+        assert not any(c.media_id in (i1.id, i2.id) for c in win.project.clips.values())
+        win.undo_stack.redo()
+        assert sum(c.media_id in (i1.id, i2.id) for c in win.project.clips.values()) == 2
+    finally:
+        for c in list(win.project.clips.values()):
+            if c.media_id in (i1.id, i2.id):
+                win.project.remove_clip(c.id)
+        win.project.remove_media(i1.id)
+        win.project.remove_media(i2.id)
+        win.timeline.refresh()
+
+
+def test_timeline_drop_kind_mismatch_falls_back_to_a_matching_track(win):
+    """Dropping an audio file over a video track (or vice versa) must not
+    force a kind mismatch onto that track - it should fall back to
+    add_media_at_playhead's own same-kind default instead."""
+    from PySide6.QtCore import QMimeData, QPointF
+
+    from prismcut.core import media as media_utils
+
+    win.timeline.pps = 26.0
+    video_track = win.project.video_tracks()[0]
+    audio_track = win.project.audio_tracks()[0]
+    item = win.project.add_media(__file__ + "#drop_kind_mismatch")
+    item.kind, item.duration = "audio", 4.0
+    drop_t = 230_000.0
+    # drop point is over the VIDEO track
+    scene_pt = QPointF(drop_t * win.timeline.pps, win.timeline.track_y(video_track.id) + 3)
+
+    md = QMimeData()
+    md.setData(media_utils.MEDIA_ID_MIME_TYPE, item.id.encode("utf-8"))
+    ev = _FakeDragDropEvent(md, QPointF(win.timeline.view.mapFromScene(scene_pt)))
+    try:
+        win.timeline.view.dropEvent(ev)
+        clip = next(c for c in win.project.clips.values() if c.media_id == item.id)
+        assert clip.track_id == audio_track.id   # not video_track.id
+    finally:
+        for c in list(win.project.clips.values()):
+            if c.media_id == item.id:
+                win.project.remove_clip(c.id)
+        win.project.remove_media(item.id)
+        win.timeline.refresh()
+
+
 def test_timeline_close_gap_after_is_undoable(win):
     img = win.project.add_media(__file__)
     img.kind = "image"
