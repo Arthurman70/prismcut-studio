@@ -405,6 +405,33 @@ class Project:
         candidates = [m for m in self.markers if abs(m.time - time) <= tolerance]
         return min(candidates, key=lambda m: abs(m.time - time)) if candidates else None
 
+    def timeline_summary(self, max_clips_per_track: int = 40) -> str:
+        """Human/AI-readable snapshot of the whole timeline: total
+        duration, every track's clips (label + timing + mute state), and
+        markers if any. Capped per track so a huge project stays a
+        bounded system-prompt addition - shared by Agent Mode's
+        get_timeline_summary tool and the Chat panel's always-on context
+        injection, so both ever show the AI the exact same picture."""
+        lines = [f"Timeline duration: {self.duration():.1f}s"]
+        for t in self.tracks:
+            clips = self.clips_on(t.id)
+            header = f"Track {t.name} ({t.kind}{', muted' if t.mute else ''}):"
+            if not clips:
+                lines.append(f"{header} (empty)")
+                continue
+            lines.append(header)
+            for c in clips[:max_clips_per_track]:
+                tag = " (muted)" if c.muted else ""
+                lines.append(f"  - {c.start:.1f}s-{c.end:.1f}s {(c.label or 'clip')!r}{tag}")
+            remaining = len(clips) - max_clips_per_track
+            if remaining > 0:
+                lines.append(f"  ... and {remaining} more")
+        if self.markers:
+            lines.append("Markers:")
+            for m in self.markers:
+                lines.append(f"  - {m.time:.1f}s: {(m.label or '(unlabeled)')!r}")
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------ io
     def to_dict(self) -> dict:
         return {

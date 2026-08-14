@@ -617,3 +617,59 @@ def test_find_relink_matches_handles_nonexistent_folder(tmp_path):
     p.check_offline()
 
     assert p.find_relink_matches(tmp_path / "does-not-exist") == {}
+
+
+# -------------------------------------------------------- timeline_summary
+
+def test_timeline_summary_on_an_empty_project():
+    p = Project()
+
+    summary = p.timeline_summary()
+
+    assert summary.startswith("Timeline duration: 0.0s")
+    assert "(empty)" in summary
+    assert "Markers:" not in summary   # nothing to report
+
+
+def test_timeline_summary_lists_clips_with_timing_and_mute_state(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    p.add_clip(item.id, v1.id, 0.0, 3.0, label="Intro")
+    muted = p.add_clip(item.id, v1.id, 3.0, 2.0, label="B-roll")
+    muted.muted = True
+
+    summary = p.timeline_summary()
+
+    assert "Timeline duration: 5.0s" in summary
+    assert f"Track {v1.name} ({v1.kind}):" in summary
+    assert "0.0s-3.0s 'Intro'" in summary
+    assert "3.0s-5.0s 'B-roll' (muted)" in summary
+
+
+def test_timeline_summary_lists_markers(tmp_path):
+    p = Project()
+    p.add_marker(2.0, "Chorus")
+    p.add_marker(10.0)   # unlabeled
+
+    summary = p.timeline_summary()
+
+    assert "Markers:" in summary
+    assert "2.0s: 'Chorus'" in summary
+    assert "10.0s: '(unlabeled)'" in summary
+
+
+def test_timeline_summary_caps_clips_per_track(tmp_path):
+    p = Project()
+    item = _image_item(p, tmp_path)
+    v1 = p.video_tracks()[-1]
+    for i in range(5):
+        p.add_clip(item.id, v1.id, i * 1.0, 1.0, label=f"clip{i}")
+
+    summary = p.timeline_summary(max_clips_per_track=3)
+
+    for i in range(3):
+        assert f"'clip{i}'" in summary
+    for i in range(3, 5):
+        assert f"'clip{i}'" not in summary
+    assert "... and 2 more" in summary

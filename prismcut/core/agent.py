@@ -191,12 +191,7 @@ class AgentToolRunner(QObject):
                          for m in items)
 
     def _t_timeline_summary(self, args: dict) -> str:
-        p = self.win.project
-        lines = [f"Timeline duration: {p.duration():.1f}s"]
-        for t in p.tracks:
-            clips = p.clips_on(t.id)
-            lines.append(f"- {t.name} ({t.kind}{', muted' if t.mute else ''}): {len(clips)} clip(s)")
-        return "\n".join(lines)
+        return self.win.project.timeline_summary()
 
     def _t_get_clip(self, args: dict) -> str:
         c = self.win.project.clips.get(args.get("clip_id", ""))

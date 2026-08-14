@@ -339,6 +339,12 @@ class MainWindow(QMainWindow):
         auto_pricing_act.triggered.connect(lambda on: self.settings.set("pricing/auto_refresh", on))
         m_help.addAction(auto_pricing_act)
         m_help.addSeparator()
+        timeline_ctx_act = QAction("Include timeline context in AI chat", self, checkable=True,
+                                   checked=self.settings.get_bool("chat/include_timeline_context", True))
+        timeline_ctx_act.triggered.connect(
+            lambda on: self.settings.set("chat/include_timeline_context", on))
+        m_help.addAction(timeline_ctx_act)
+        m_help.addSeparator()
         act(m_help, "About PrismCut Studio", self._about)
 
     # ---------------------------------------------------------------- actions

@@ -388,6 +388,71 @@ def test_agent_mode_toggle_exists_and_is_off_by_default(win):
     assert win.chat.agent_mode.isChecked() is False
 
 
+def test_t_timeline_summary_matches_project_timeline_summary_verbatim(win):
+    """Agent Mode's get_timeline_summary tool and the Chat panel's always-
+    on context injection must show the AI the exact same picture - one
+    source of truth, not two hand-rolled formatters that could drift."""
+    img = win.project.add_media(__file__ + "#agent_summary_check")
+    img.kind = "image"
+    v1 = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, v1.id, 0.0, 3.0, label="Verbatim check")
+    try:
+        assert win.agent._t_timeline_summary({}) == win.project.timeline_summary()
+    finally:
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+
+
+def test_chat_system_includes_timeline_context_when_toggle_on_and_clips_exist(win):
+    img = win.project.add_media(__file__ + "#chat_context_on")
+    img.kind = "image"
+    v1 = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, v1.id, 0.0, 3.0, label="Context clip")
+    saved = win.settings.get_bool("chat/include_timeline_context", True)
+    win.settings.set("chat/include_timeline_context", True)
+    try:
+        system = win.chat._system_with_timeline_context()
+        assert "Context clip" in system
+        assert win.project.timeline_summary() in system
+    finally:
+        win.settings.set("chat/include_timeline_context", saved)
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+
+
+def test_chat_system_omits_timeline_context_when_toggle_off(win):
+    img = win.project.add_media(__file__ + "#chat_context_off")
+    img.kind = "image"
+    v1 = win.project.video_tracks()[-1]
+    clip = win.project.add_clip(img.id, v1.id, 0.0, 3.0, label="Should not appear")
+    saved = win.settings.get_bool("chat/include_timeline_context", True)
+    win.settings.set("chat/include_timeline_context", False)
+    try:
+        system = win.chat._system_with_timeline_context()
+        assert "Should not appear" not in system
+        assert system == win.chat.system_prompt
+    finally:
+        win.settings.set("chat/include_timeline_context", saved)
+        win.project.remove_clip(clip.id)
+        win.project.remove_media(img.id)
+
+
+def test_chat_system_omits_timeline_context_when_project_has_no_clips(win, monkeypatch):
+    """The toggle being on doesn't mean spending tokens on an empty
+    project - the injection is skipped entirely when there's nothing to
+    summarize. Monkeypatches project.clips to {} rather than asserting
+    the shared win fixture's real clips dict is already empty (other
+    tests sharing this fixture may leave clips behind)."""
+    monkeypatch.setattr(win.project, "clips", {})
+    saved = win.settings.get_bool("chat/include_timeline_context", True)
+    win.settings.set("chat/include_timeline_context", True)
+    try:
+        system = win.chat._system_with_timeline_context()
+        assert system == win.chat.system_prompt
+    finally:
+        win.settings.set("chat/include_timeline_context", saved)
+
+
 def _dispatch_from_thread(win, call, timeout=5.0):
     """AgentToolRunner.dispatch() uses a BlockingQueuedConnection, which
     deadlocks outright if called from the same thread that owns the

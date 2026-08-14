@@ -284,6 +284,22 @@ class ChatPanel(QWidget):
         self.messages.append(ChatMessage(role, text, attachments or []))
         self._render()
 
+    def _system_with_timeline_context(self) -> str:
+        """Prepends a live timeline_summary() to the outgoing system prompt
+        when the setting is on and the project has anything to summarize -
+        never written back into chat/system (the user-edited setting)
+        itself, so it can't go stale and always reflects the timeline at
+        the moment of THIS send. Applies regardless of Agent Mode: Agent
+        Mode's get_timeline_summary tool is opt-in per question, this is
+        always-there context."""
+        if self.agent is None or not self.settings.get_bool("chat/include_timeline_context", True):
+            return self.system_prompt
+        project = self.agent.win.project
+        if not project.clips:
+            return self.system_prompt
+        summary = project.timeline_summary()
+        return f"{self.system_prompt}\n\n{summary}" if self.system_prompt else summary
+
     # ------------------------------------------------------------------ send
     def send(self):
         if self.worker is not None:
@@ -311,7 +327,7 @@ class ChatPanel(QWidget):
         self._stream_buf = ""
         use_agent = bool(self.agent_mode and self.agent_mode.isChecked() and self.agent)
         self.worker = ChatWorker(adapter, model.id, list(self.messages),
-                                 self.system_prompt, self.temp.value() / 10.0,
+                                 self._system_with_timeline_context(), self.temp.value() / 10.0,
                                  tools=self.agent.tools if use_agent else None,
                                  on_tool_call=self._on_tool_call if use_agent else None)
         self.worker.delta.connect(self._on_delta)
