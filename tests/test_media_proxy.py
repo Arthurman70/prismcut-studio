@@ -73,3 +73,25 @@ def test_generate_proxy_returns_none_when_ffmpeg_fails_to_produce_output(monkeyp
     monkeypatch.setattr(media_mod.subprocess, "run", lambda *a, **k: None)   # no output file created
 
     assert media_mod.generate_proxy(src) is None
+
+
+# ----------------------------------------------------------- resolved_duration
+
+def test_resolved_duration_short_circuits_on_an_already_positive_current(monkeypatch):
+    calls = []
+    monkeypatch.setattr(media_mod, "probe", lambda path: calls.append(path) or {"duration": 99.0})
+
+    assert media_mod.resolved_duration("clip.mp3", 5.0) == 5.0
+    assert calls == []   # never re-probes when current is already real
+
+
+def test_resolved_duration_reprobes_and_returns_the_fresh_value(monkeypatch):
+    monkeypatch.setattr(media_mod, "probe", lambda path: {"duration": 7.5})
+
+    assert media_mod.resolved_duration("clip.mp3", 0.0) == 7.5
+
+
+def test_resolved_duration_returns_none_when_the_reprobe_also_comes_back_empty(monkeypatch):
+    monkeypatch.setattr(media_mod, "probe", lambda path: {"duration": 0.0})
+
+    assert media_mod.resolved_duration("clip.mp3", 0.0) is None

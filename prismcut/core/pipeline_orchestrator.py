@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from ..providers.base import ChatMessage
 from . import http
+from . import media as media_utils
 from .pipeline import MoviePipeline, Scene, StageAsset, new_scene
 
 
@@ -539,7 +540,13 @@ class PipelineRun(QObject):
             aud = scene.audio.active
             img_item = self.win.project.media.get(img.media_id) if img else None
             aud_item = self.win.project.media.get(aud.media_id) if aud else None
-            duration = aud_item.duration if aud_item and aud_item.duration else 3.0
+            duration = None
+            if aud_item:
+                duration = media_utils.resolved_duration(aud_item.path, aud_item.duration)
+                if duration is not None:
+                    aud_item.duration = duration   # self-heals the MediaItem too, not just this clip
+            if duration is None:
+                duration = 3.0
             if img_item and "image" not in scene.clip_ids and "video" not in scene.clip_ids:
                 clip = self.win.timeline.add_media_at_playhead(
                     img_item.id, self.pipeline.video_track_id, cursor, duration,
@@ -854,7 +861,12 @@ class PipelineRun(QObject):
             if s.index >= scene.index:
                 break
             a = self.win.project.media.get(s.audio.active.media_id) if s.audio.active else None
-            total += a.duration if a and a.duration else 3.0
+            a_duration = None
+            if a:
+                a_duration = media_utils.resolved_duration(a.path, a.duration)
+                if a_duration is not None:
+                    a.duration = a_duration
+            total += a_duration if a_duration is not None else 3.0
         return total
 
     def _video_batch_done(self, on_all_done: Optional[Callable]) -> None:

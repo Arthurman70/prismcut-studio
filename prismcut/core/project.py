@@ -252,7 +252,10 @@ class Project:
         if not item or not track:
             return None
         if duration is None:
-            duration = item.duration if item.duration > 0 else 5.0
+            resolved = media_utils.resolved_duration(item.path, item.duration)
+            if resolved is not None:
+                item.duration = resolved   # self-heals the MediaItem, not just this one clip
+            duration = resolved if resolved is not None else 5.0
         clip = Clip(id=_uid(), media_id=media_id, track_id=track_id,
                     start=max(0.0, start), duration=max(0.2, duration), label=label or item.label)
         self.clips[clip.id] = clip

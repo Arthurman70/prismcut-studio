@@ -341,6 +341,45 @@ def test_add_title_clip_gets_default_duration_from_the_media_item(tmp_path):
     assert clip.duration == 7.0
 
 
+def test_add_clip_self_heals_a_zero_duration_media_item_via_reprobe(monkeypatch, tmp_path):
+    """A MediaItem with duration=0.0 (e.g. probed before ffmpeg was ready,
+    or from an earlier bug) used to always fall back to a fixed 5.0s clip.
+    add_clip() now re-probes on the spot and, if that comes back real,
+    writes it onto the MediaItem too - fixed for every future clip off
+    this item, not just this one."""
+    p = Project()
+    aud = tmp_path / "narration.mp3"
+    aud.write_bytes(b"fake-mp3")
+    item = p.add_media(aud)   # real (ffmpeg-less) probe - duration stays 0.0
+    item.kind = "audio"
+    a1 = p.audio_tracks()[0]
+
+    from prismcut.core import project as project_mod
+    monkeypatch.setattr(project_mod.media_utils, "probe", lambda path: {"duration": 12.5})
+
+    clip = p.add_clip(item.id, a1.id, 0.0)   # no explicit duration
+
+    assert clip.duration == 12.5
+    assert item.duration == 12.5   # self-healed for future references too
+
+
+def test_add_clip_falls_back_to_five_seconds_when_reprobe_also_fails(monkeypatch, tmp_path):
+    p = Project()
+    aud = tmp_path / "narration.mp3"
+    aud.write_bytes(b"fake-mp3")
+    item = p.add_media(aud)
+    item.kind = "audio"
+    a1 = p.audio_tracks()[0]
+
+    from prismcut.core import project as project_mod
+    monkeypatch.setattr(project_mod.media_utils, "probe", lambda path: {"duration": 0.0})
+
+    clip = p.add_clip(item.id, a1.id, 0.0)
+
+    assert clip.duration == 5.0
+    assert item.duration == 0.0   # nothing real to heal it with - left as-is
+
+
 def test_next_adjacent_clip_finds_the_exactly_touching_clip(tmp_path):
     p = Project()
     item = _image_item(p, tmp_path)

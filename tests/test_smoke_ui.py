@@ -1104,6 +1104,72 @@ def test_movie_pipeline_scenes_get_labeled_clips_on_timeline(win):
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_maybe_insert_all_interim_self_heals_a_zero_duration_audio_item(win, monkeypatch):
+    """_maybe_insert_all_interim() used to fall straight to a fixed 3.0s
+    scene duration whenever the narration MediaItem's duration was 0.0
+    (whatever the actual audio length really was) - it now re-probes via
+    media.resolved_duration() and self-heals the MediaItem, matching
+    core/project.py's add_clip() fix for the same underlying bug."""
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+    from prismcut.core import pipeline_orchestrator as orch_mod
+
+    pipeline = MoviePipeline(name="Duration heal test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        # own private path (not bare __file__ - would dedup-collide with
+        # other movie-pipeline tests' "generated" media of the same path)
+        aud_item = win.bin.add_generated(__file__ + "#duration_heal", {"mode": "audio"})
+        aud_item.kind = "audio"
+        aud_item.duration = 0.0   # simulates a bad/earlier probe
+        pipeline.scenes[0].audio.push(StageAsset(media_id=aud_item.id, source="generated"))
+        run._images_done = True
+        run._audio_done = True
+
+        monkeypatch.setattr(orch_mod.media_utils, "probe", lambda path: {"duration": 9.5})
+        run._maybe_insert_all_interim()
+
+        clip = win.project.clips[pipeline.scenes[0].clip_ids["audio"]]
+        assert clip.duration == 9.5
+        assert aud_item.duration == 9.5   # self-healed for future scenes too
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_fallback_start_self_heals_a_zero_duration_audio_item(win, monkeypatch):
+    """_scene_fallback_start() (used to place a brand-new scene's clip when
+    it has no existing clip yet) sums prior scenes' audio durations - same
+    zero-duration-MediaItem fallback bug as _maybe_insert_all_interim(),
+    fixed the same way."""
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+    from prismcut.core import pipeline_orchestrator as orch_mod
+
+    pipeline = MoviePipeline(name="Fallback start heal test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1)]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        aud_item = win.bin.add_generated(__file__ + "#fallback_start_heal", {"mode": "audio"})
+        aud_item.kind = "audio"
+        aud_item.duration = 0.0   # simulates a bad/earlier probe
+        pipeline.scenes[0].audio.push(StageAsset(media_id=aud_item.id, source="generated"))
+
+        monkeypatch.setattr(orch_mod.media_utils, "probe", lambda path: {"duration": 6.25})
+        start = run._scene_fallback_start(pipeline.scenes[1])
+
+        assert start == 6.25   # scene 0's healed duration, not the 3.0s fallback
+        assert aud_item.duration == 6.25
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_swap_scene_visual_clip_replaces_old_clip_and_updates_clip_ids(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 

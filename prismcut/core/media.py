@@ -107,6 +107,18 @@ def probe(path) -> dict:
     return info
 
 
+def resolved_duration(path, current: float = 0.0) -> Optional[float]:
+    """current if it's already a real (positive) duration; otherwise
+    re-probes path on the spot and returns the fresh value if that came
+    back positive too, else None. Never guesses a fallback itself - every
+    caller needs a different one (a placeholder image clip vs. a movie
+    pipeline scene's audio track), so that stays the caller's call."""
+    if current > 0:
+        return current
+    fresh = probe(path)["duration"]
+    return fresh if fresh > 0 else None
+
+
 def thumbnail(path, size: int = 288) -> Optional[Path]:
     """Return a cached thumbnail PNG for any media file (image/video/audio)."""
     p = Path(path)
