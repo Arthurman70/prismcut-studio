@@ -2,6 +2,7 @@
 razor, snapping, zoom, playhead scrubbing and a lightweight preview player."""
 from __future__ import annotations
 
+import shiboken6
 from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QPainter, QPen)
 from PySide6.QtWidgets import (QButtonGroup, QGraphicsItem, QGraphicsLineItem,
@@ -989,6 +990,12 @@ class TimelineWidget(QWidget):
 
     # ------------------------------------------------------------ selection
     def _sel_changed(self):
+        # A queued scene.selectionChanged emission can still be pending
+        # when the window closes - by the time Qt delivers it, self.scene's
+        # C++ object may already be destroyed, and selectedItems() on a
+        # dead object raises rather than returning [].
+        if not shiboken6.isValid(self.scene):
+            return
         sel = [i for i in self.scene.selectedItems() if isinstance(i, ClipItem)]
         self.selectionChanged.emit(sel[0].clip.id if sel else None)
 
