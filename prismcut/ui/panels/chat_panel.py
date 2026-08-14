@@ -21,7 +21,7 @@ from ...core import media as media_utils
 from ...core import paths
 from ...providers.base import ChatMessage
 from .. import theme
-from ..widgets.common import DropAcceptor, ModelCombo, accent_button
+from ..widgets.common import DropAcceptor, ModelCombo, SpellCheckHighlighter, accent_button
 
 
 class ChatWorker(QThread):
@@ -185,6 +185,7 @@ class ChatPanel(QWidget):
         self.input.setPlaceholderText("Message the AI…   (Ctrl+Enter to send)")
         self.input.setFixedHeight(72)
         self.input.installEventFilter(self)
+        SpellCheckHighlighter(self.input.document())
         lay.addWidget(self.input)
 
         # Form draft auto-recovery: debounced so we're not hitting QSettings

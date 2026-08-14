@@ -863,6 +863,52 @@ def test_new_pipeline_dialog_import_script_populates_status_and_accept(win, monk
         dlg.close()
 
 
+# --------------------------------------------------------------- spell check
+
+def _assert_spellcheck_flags_a_misspelling(document):
+    """SpellCheckHighlighter(document) parents itself to the document
+    (standard Qt QObject ownership), so it's findable without the
+    production code needing to keep - or expose - a reference anywhere.
+    rehighlight() forces a synchronous pass rather than relying on the
+    highlighter's own idle/queued trigger."""
+    from prismcut.ui.widgets.common import SpellCheckHighlighter
+
+    highlighters = document.findChildren(SpellCheckHighlighter)
+    assert len(highlighters) == 1
+    document.setPlainText("This has a corect misspelling in it.")
+    highlighters[0].rehighlight()
+    ranges = document.firstBlock().layout().formats()
+    assert len(ranges) >= 1
+
+
+def test_chat_input_has_spellcheck_highlighter(win):
+    try:
+        _assert_spellcheck_flags_a_misspelling(win.chat.input.document())
+    finally:
+        win.chat.input.clear()
+
+
+def test_new_movie_brief_has_spellcheck_highlighter(win):
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        _assert_spellcheck_flags_a_misspelling(dlg.brief_edit.document())
+    finally:
+        dlg.close()
+
+
+def test_import_script_paste_box_has_spellcheck_highlighter(win):
+    from prismcut.ui.dialogs.import_script_dialog import ImportScriptDialog
+
+    model = win.registry.by_key("google::gemini-3.6-flash")
+    dlg = ImportScriptDialog(model, win.get_adapter, win.jobs, win)
+    try:
+        _assert_spellcheck_flags_a_misspelling(dlg.text_edit.document())
+    finally:
+        dlg.close()
+
+
 def test_movie_pipeline_panel_loads_pipeline_and_builds_scene_rows(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 

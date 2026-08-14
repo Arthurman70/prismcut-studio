@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QMessageBox, QPlainText
 
 from ...core.pipeline_orchestrator import _parse_breakdown
 from ...providers.base import ChatMessage
-from ..widgets.common import label
+from ..widgets.common import SpellCheckHighlighter, label
 
 _SYS_PROMPT = (
     "You extract scenes from a movie/show script the user already wrote, for an AI "
@@ -46,6 +46,7 @@ class ImportScriptDialog(QDialog):
             "Scene 1: A robot wakes up in an empty workshop, dust in the light.\n"
             "Dialogue: \"Where... am I?\"\n\n"
             "Scene 2: It finds an old paintbrush on the workbench.\n...")
+        SpellCheckHighlighter(self.text_edit.document())
         v.addWidget(self.text_edit, 1)
 
         buttons = QDialogButtonBox()

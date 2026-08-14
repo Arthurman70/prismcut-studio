@@ -13,7 +13,7 @@ from ...core import media as media_utils
 from ...core.pipeline import MoviePipeline
 from ...core.pipeline_orchestrator import _seed_scene_durations
 from ...providers.base import ChatMessage
-from ..widgets.common import DropAcceptor, ModelCombo, label
+from ..widgets.common import DropAcceptor, ModelCombo, SpellCheckHighlighter, label
 
 
 class NewPipelineDialog(QDialog):
@@ -34,6 +34,7 @@ class NewPipelineDialog(QDialog):
             "beats, tone, desired length. The AI breaks this into a numbered, scene-by-"
             "scene shot list (visual description + narration/dialogue per scene).")
         self.brief_edit.setMinimumHeight(130)
+        SpellCheckHighlighter(self.brief_edit.document())
         form.addRow("Brief", self.brief_edit)
 
         erow = QHBoxLayout()

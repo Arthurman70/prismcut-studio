@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QPushButton, QSlider,
                                QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
+from ...core import spellcheck
 from ...core.registry import ModelSpec, Registry
 
 # Shared job/scene status glyphs - single copy so JobsPanel and the movie
@@ -315,3 +317,23 @@ class DropAcceptor(QObject):
             ev.acceptProposedAction()
             return True
         return False
+
+
+# ------------------------------------------------------------- spell check
+
+class SpellCheckHighlighter(QSyntaxHighlighter):
+    """Red squiggly underline under misspelled words - attach with
+    SpellCheckHighlighter(widget.document()). core.spellcheck soft-fails
+    to no results if pyspellchecker isn't available, so this is safe to
+    wire onto any QTextEdit/QPlainTextEdit unconditionally rather than
+    every call site checking availability itself."""
+
+    def __init__(self, document):
+        super().__init__(document)
+        self._fmt = QTextCharFormat()
+        self._fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+        self._fmt.setUnderlineColor(QColor("#e05252"))
+
+    def highlightBlock(self, text: str):
+        for start, end in spellcheck.misspelled_spans(text):
+            self.setFormat(start, end - start, self._fmt)
