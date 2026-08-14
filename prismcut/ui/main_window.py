@@ -290,8 +290,21 @@ class MainWindow(QMainWindow):
         act(m_ai, "💬 Chat panel", lambda: (self.chat_dock.show(), self.chat_dock.raise_()))
         act(m_ai, "🚀 Generate panel", lambda: (self.gen_dock.show(), self.gen_dock.raise_()))
         act(m_ai, "🧪 Prompt Lab", lambda: (self.lab_dock.show(), self.lab_dock.raise_()))
+        m_ai.addSeparator()
+        act(m_ai, "🎬 New movie…", self._new_movie)
 
         m_view = mb.addMenu("&View")
+        tab_group = QActionGroup(self)
+        tab_group.setExclusive(True)
+        tab_actions = []
+        for i in range(self.tabs.count()):
+            a = QAction(self.tabs.tabText(i), self, checkable=True, checked=(i == self.tabs.currentIndex()))
+            a.triggered.connect(lambda _c, idx=i: self.tabs.setCurrentIndex(idx))
+            tab_group.addAction(a)
+            m_view.addAction(a)
+            tab_actions.append(a)
+        self.tabs.currentChanged.connect(lambda idx: tab_actions[idx].setChecked(True))
+        m_view.addSeparator()
         for dock in (self.bin_dock, self.fx_dock, self.history_dock, self.chat_dock,
                      self.gen_dock, self.lab_dock, self.jobs_dock):
             m_view.addAction(dock.toggleViewAction())
@@ -556,6 +569,10 @@ class MainWindow(QMainWindow):
     def new_project(self):
         self.project = Project()
         self._rebind_project()
+
+    def _new_movie(self):
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.movie))
+        self.movie.new_pipeline()
 
     def open_project(self):
         f, _ = QFileDialog.getOpenFileName(self, "Open project", "",

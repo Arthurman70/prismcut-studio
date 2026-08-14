@@ -1027,7 +1027,7 @@ def test_generate_breakdown_omits_scene_count_hint_when_unset(win):
 
 
 def test_new_pipeline_skips_script_breakdown_when_scenes_were_imported(win, monkeypatch):
-    """Regression guard: _new_pipeline() must not overwrite scenes that
+    """Regression guard: new_pipeline() must not overwrite scenes that
     arrived via NewPipelineDialog's "Import my own script..." flow by
     running the normal invent-from-brief breakdown on top of them - and
     must still kick off narration audio the same way a normal breakdown
@@ -1055,7 +1055,7 @@ def test_new_pipeline_skips_script_breakdown_when_scenes_were_imported(win, monk
     monkeypatch.setattr(movie_pipeline_mod.PipelineRun, "run_audio_batch",
                         lambda self, *a, **k: audio_calls.append(1))
     try:
-        win.movie._new_pipeline()
+        win.movie.new_pipeline()
         assert win.movie.run.pipeline is imported
         assert breakdown_calls == []   # must NOT run invent-from-brief over imported scenes
         assert audio_calls == [1]      # narration still kicked off, same as a normal breakdown
@@ -1087,10 +1087,75 @@ def test_new_pipeline_runs_script_breakdown_when_no_scenes_were_imported(win, mo
     monkeypatch.setattr(movie_pipeline_mod.MoviePipelinePanel, "_run_script_breakdown",
                         lambda self: breakdown_calls.append(1))
     try:
-        win.movie._new_pipeline()
+        win.movie.new_pipeline()
         assert breakdown_calls == [1]
     finally:
         win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+# ------------------------------------------------------- top-bar navigation
+
+def test_view_menu_tab_actions_switch_tabs_and_stay_in_sync(win):
+    """Every central tab gets a checkable View-menu action (reusing the
+    tab's own label/icon verbatim via tabText(), so it can't drift from
+    the tabs themselves), driven by a QActionGroup exactly like the
+    existing Theme/Density submenus - clicking an action switches tabs,
+    and switching tabs by clicking the tab bar directly keeps the
+    matching action checked."""
+    from PySide6.QtGui import QAction
+
+    saved_index = win.tabs.currentIndex()
+    actions = win.findChildren(QAction)
+    tab_actions = [next(a for a in actions if a.isCheckable() and a.text() == win.tabs.tabText(i))
+                  for i in range(win.tabs.count())]
+    try:
+        for i, a in enumerate(tab_actions):
+            a.trigger()
+            assert win.tabs.currentIndex() == i
+            assert a.isChecked()
+            for j, other in enumerate(tab_actions):
+                if j != i:
+                    assert not other.isChecked()
+
+        # switching via the tab bar itself (not the menu action) must also
+        # keep the action group in sync
+        win.tabs.setCurrentIndex(0)
+        assert tab_actions[0].isChecked()
+        assert not tab_actions[-1].isChecked()
+    finally:
+        win.tabs.setCurrentIndex(saved_index)
+
+
+def test_new_movie_menu_action_switches_to_movie_tab_and_opens_dialog(win, monkeypatch):
+    """AI ▸ New movie… must reach the same NewPipelineDialog flow as the
+    Movie Pipeline panel's own button, even when starting from a
+    different tab - mocks NewPipelineDialog the same way the panel's own
+    new_pipeline() tests do."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline
+
+    fresh = MoviePipeline(name="From menu", script_model="google::gemini-3.6-flash",
+                          image_model="fal::img-test", video_model="fal::vid-test")
+
+    class FakeDialog:
+        def __init__(self, *a, **k):
+            self.pipeline = fresh
+
+        def exec(self):
+            return 1
+
+    monkeypatch.setattr(movie_pipeline_mod, "NewPipelineDialog", FakeDialog)
+    monkeypatch.setattr(movie_pipeline_mod.MoviePipelinePanel, "_run_script_breakdown",
+                        lambda self: None)
+    saved_index = win.tabs.currentIndex()
+    win.tabs.setCurrentIndex(0)   # start away from the Movie Pipeline tab
+    try:
+        win._new_movie()
+        assert win.tabs.currentIndex() == win.tabs.indexOf(win.movie)
+        assert win.movie.run.pipeline is fresh
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+        win.tabs.setCurrentIndex(saved_index)
 
 
 def test_movie_pipeline_script_breakdown_failure_shows_persistent_error_not_just_toast(win):

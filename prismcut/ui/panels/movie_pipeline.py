@@ -273,7 +273,7 @@ class MoviePipelinePanel(QWidget):
 
         top = QHBoxLayout()
         new_btn = accent_button("🎬 New movie…")
-        new_btn.clicked.connect(self._new_pipeline)
+        new_btn.clicked.connect(self.new_pipeline)
         self.load_combo = QComboBox()
         self.load_combo.setMinimumWidth(220)
         self.load_combo.activated.connect(self._load_selected)
@@ -375,7 +375,7 @@ class MoviePipelinePanel(QWidget):
         if path:
             self._set_pipeline(MoviePipeline.load(path))
 
-    def _new_pipeline(self):
+    def new_pipeline(self):
         dlg = NewPipelineDialog(self.registry, self.settings, self.win.jobs, self.win.get_adapter,
                                 self.win)
         if dlg.exec() and dlg.pipeline:
