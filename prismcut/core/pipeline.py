@@ -133,6 +133,19 @@ class MoviePipeline:
     # never a hard constraint (it still decides the real count from the
     # brief). 0 = no hint given, same as before this field existed.
     scene_count_hint: int = 0
+    # How many scenes' video generation run_video_batch keeps in flight at
+    # once (a sliding window, not fixed-size batches - see
+    # pipeline_orchestrator._run_video_chain). 1 = today's original strict
+    # one-at-a-time behavior, and the default here on purpose: an
+    # already-saved pipeline missing this field (every pipeline saved
+    # before this field existed) must keep behaving exactly as it did
+    # before. New pipelines get a faster default set explicitly at
+    # construction time (new_pipeline_dialog.py), not via this field
+    # default. Image generation has no equivalent knob - it stays
+    # sequential unconditionally (each scene's image needs earlier scenes'
+    # images as continuity reference, a real ordering dependency video
+    # generation doesn't have).
+    video_concurrency: int = 1
     video_track_id: str = ""
     audio_track_id: str = ""
     status: str = "draft"

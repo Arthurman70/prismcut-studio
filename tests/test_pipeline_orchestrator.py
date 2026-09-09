@@ -1,8 +1,9 @@
 import pytest
 
 from prismcut.core.pipeline_orchestrator import (_BatchTracker, _augment_prompt_for_model,
-                                                 _is_moderation_failure, _parse_breakdown,
-                                                 _seed_scene_durations, resolve_video_plan)
+                                                 _dispatch_window, _is_moderation_failure,
+                                                 _parse_breakdown, _seed_scene_durations,
+                                                 resolve_video_plan)
 
 
 class _FakeModel:
@@ -126,6 +127,104 @@ def test_batch_tracker_of_zero_scenes_would_need_manual_completion_check():
     fired = []
     _BatchTracker(0, lambda: fired.append(1))
     assert fired == []
+
+
+# ------------------------------------------------------------- _dispatch_window
+def test_dispatch_window_concurrency_1_dispatches_one_at_a_time():
+    dispatched = []
+
+    def start_one(item, on_settled):
+        dispatched.append(item)
+
+    _dispatch_window([1, 2, 3], 1, start_one)
+    assert dispatched == [1]   # only the first item primed, nothing settled yet
+
+
+def test_dispatch_window_primes_up_to_concurrency_items_up_front():
+    dispatched = []
+    _dispatch_window([1, 2, 3, 4, 5], 3, lambda item, on_settled: dispatched.append(item))
+    assert dispatched == [1, 2, 3]   # primed 3 at once; none have settled
+
+
+def test_dispatch_window_refills_one_at_a_time_as_each_settles():
+    dispatched = []
+    on_settled_ref = []
+
+    def start_one(item, on_settled):
+        dispatched.append(item)
+        on_settled_ref.append(on_settled)
+
+    _dispatch_window([1, 2, 3, 4, 5], 2, start_one)
+    assert dispatched == [1, 2]
+    settle = on_settled_ref[0]   # every item is handed the SAME shared callback
+    settle()   # simulate item 1 finishing
+    assert dispatched == [1, 2, 3]   # window refilled immediately with the next queued item
+    settle()   # item 2 (or 3 - doesn't matter, it's one shared window) finishing
+    assert dispatched == [1, 2, 3, 4]
+    settle()
+    assert dispatched == [1, 2, 3, 4, 5]
+    settle()
+    settle()
+    assert dispatched == [1, 2, 3, 4, 5]   # fully drained, extra settles are harmless
+
+
+def test_dispatch_window_concurrency_higher_than_queue_length_dispatches_everything_once():
+    dispatched = []
+    _dispatch_window([1, 2], 5, lambda item, on_settled: dispatched.append(item))
+    assert dispatched == [1, 2]
+
+
+def test_dispatch_window_empty_queue_is_a_noop():
+    calls = []
+    _dispatch_window([], 3, lambda item, on_settled: calls.append(item))
+    assert calls == []
+
+
+def test_dispatch_window_concurrency_zero_or_negative_still_dispatches_at_least_one():
+    # Defensive floor - a caller passing 0/negative concurrency (e.g. a
+    # corrupted saved-pipeline field) must not silently dispatch nothing
+    # and hang the batch forever.
+    dispatched = []
+    _dispatch_window([1, 2], 0, lambda item, on_settled: dispatched.append(item))
+    assert dispatched == [1]
+    dispatched2 = []
+    _dispatch_window([1, 2], -3, lambda item, on_settled: dispatched2.append(item))
+    assert dispatched2 == [1]
+
+
+def test_dispatch_window_every_item_shares_the_same_on_settled_callback():
+    # Not a chain of per-item closures over narrowing list-slices - one
+    # shared dispatcher function, handed out identically to every item.
+    # This is what makes the next test's "stale settle after drained is a
+    # no-op" property hold for ANY item's completion, not just the last one.
+    seen = []
+    _dispatch_window([1, 2, 3], 3, lambda item, on_settled: seen.append(on_settled))
+    assert seen[0] is seen[1] is seen[2]
+
+
+def test_dispatch_window_a_stale_settle_callback_after_the_queue_is_drained_is_a_noop():
+    """The concrete bug this shared-queue design fixes: the Jobs panel's
+    'Retry' resubmits a failed job with its ORIGINAL on_settled closure. If
+    that closure fires again long after the whole batch has already
+    drained (a stale retry finally succeeding after the fact), it must not
+    re-dispatch anything - a narrowing-list-slice recursion (the design
+    this replaced) would instead re-walk and re-dispatch everything that
+    originally came after the retried item."""
+    dispatched = []
+    on_settled_ref = []
+
+    def start_one(item, on_settled):
+        dispatched.append(item)
+        on_settled_ref.append(on_settled)
+
+    _dispatch_window([1, 2], 1, start_one)
+    stale = on_settled_ref[0]   # captured early, as a real retry callback would be
+    stale()   # item 1 settles "for real" - dispatches item 2
+    stale()   # item 2 settles "for real" - queue now empty
+    assert dispatched == [1, 2]
+
+    stale()   # a stale retry of item 1, reporting in long after the batch finished
+    assert dispatched == [1, 2]   # no phantom re-dispatch
 
 
 # ------------------------------------------------------------- _parse_breakdown

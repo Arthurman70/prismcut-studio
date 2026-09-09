@@ -115,6 +115,43 @@ class _BatchTracker:
             self.on_all_done()
 
 
+def _dispatch_window(queue: list, concurrency: int, start_one: Callable[[object, Callable[[], None]], None]) -> None:
+    """Generic bounded-concurrency dispatcher: keeps up to `concurrency`
+    items from `queue` in flight at once via a sliding window, not fixed-
+    size batches. Pops items front-to-back; each item's own "I'm done"
+    callback (the second argument `start_one` receives) immediately
+    dispatches the next queued item, so the window stays continuously full
+    rather than waiting for a whole sub-batch to finish together.
+
+    `queue` is one shared list, mutated in place by identity - every
+    dispatched item's completion closure pops from this SAME object,
+    unlike a recursive "pass the narrowed remainder to the next call"
+    chain. This is load-bearing, not just style: the Jobs panel's "Retry"
+    resubmits a failed job with its ORIGINAL completion closure. With a
+    shared queue, once it's drained, a stale retry's call to that closure
+    is a no-op (queue already empty) - the retry still correctly finishes
+    its own one item, it just can't cascade into re-dispatching everything
+    that originally came after it, the way a narrowing-list-slice
+    recursion would (each slice frozen at dispatch time, so a stale
+    closure's "remainder" is never actually empty even long after the
+    batch has otherwise finished).
+
+    `start_one` owns success/failure entirely - this function has no
+    concept of either, only "is there anything left to dispatch." A
+    `start_one` that raises before calling its `on_settled` argument will
+    stall that one slot forever, same as forgetting to call any other
+    completion callback - callers are expected to catch their own
+    exceptions and still call on_settled, the way _run_video_chain's
+    start_one does."""
+    def dispatch_next():
+        if not queue:
+            return
+        item = queue.pop(0)
+        start_one(item, dispatch_next)
+    for _ in range(min(max(1, concurrency), len(queue))):
+        dispatch_next()
+
+
 class PipelineRun(QObject):
     logMessage = Signal(str)
     statusChanged = Signal(str)
@@ -566,16 +603,18 @@ class PipelineRun(QObject):
 
     # ---------------------------------------------- stage 6: video + lip-sync (gate 2)
     def run_video_batch(self, on_all_done: Optional[Callable] = None,
-                        limit: Optional[int] = None) -> None:
+                        limit: Optional[int] = None, concurrency: Optional[int] = None) -> None:
         """See run_image_batch's docstring - same limit/continue semantics,
-        applied to the video (+ optional lip-sync) stage. Generates ONE
-        SCENE AT A TIME, like the image stage - not for the same reason
-        (generate_video() takes no reference-images list, so there's no
-        cross-scene continuity context to pass along), but so a long video
-        batch - the slowest, most expensive, most rate-limit-sensitive
-        stage - stays predictable rather than firing every scene's call at
-        once, and so a scene's moderation-retry (see _generate_scene_video)
-        settles before the next scene starts."""
+        applied to the video (+ optional lip-sync) stage. `concurrency`
+        (default: the pipeline's own MoviePipeline.video_concurrency, itself
+        defaulting to 1 for exact-original-behavior on old saved pipelines)
+        caps how many scenes' video generation run_video_chain keeps in
+        flight at once via a sliding window. The image stage has no
+        equivalent knob and never will - it stays unconditionally one-at-a-
+        time because each scene's image passes EARLIER scenes' images as
+        visual-continuity reference context (_image_context_refs), a real
+        ordering dependency video generation doesn't have
+        (generate_video() takes no reference-images list)."""
         targets = sorted((s for s in self.pipeline.scenes if s.video.active is None),
                          key=lambda s: s.index)
         if limit is not None:
@@ -586,20 +625,29 @@ class PipelineRun(QObject):
             return
         self._set_status("video_running")
         tracker = _BatchTracker(len(targets), lambda: self._video_batch_done(on_all_done))
-        self._run_video_chain(targets, tracker)
+        n = concurrency if concurrency is not None else max(1, self.pipeline.video_concurrency)
+        self._run_video_chain(targets, tracker, n)
 
-    def _run_video_chain(self, remaining: list, tracker: _BatchTracker) -> None:
-        if not remaining:
-            return
-        scene, rest = remaining[0], remaining[1:]
-        plan = resolve_video_plan(self.win.registry, scene.video_model or self.pipeline.video_model,
-                                  self.pipeline.lipsync_model)
-        video_adapter = self.win.get_adapter(plan.video_model.provider)
+    def _run_video_chain(self, remaining: list, tracker: _BatchTracker, concurrency: int = 1) -> None:
+        """Resolves each scene's video plan/adapter (a bad per-scene model
+        override must not silently strand that scene's tracker slot) and
+        hands the rest off to _dispatch_window, the actual sliding-window
+        logic - kept as a free function with no self.win/jobs dependency so
+        it's directly unit-testable the same way _BatchTracker/
+        resolve_video_plan already are in this module, without any Qt/
+        MainWindow/job-queue scaffolding."""
+        def start_one(scene: Scene, on_settled: Callable[[], None]) -> None:
+            try:
+                plan = resolve_video_plan(self.win.registry,
+                                          scene.video_model or self.pipeline.video_model,
+                                          self.pipeline.lipsync_model)
+                video_adapter = self.win.get_adapter(plan.video_model.provider)
+            except Exception as exc:  # noqa: BLE001 - see docstring above
+                self._fail_scene_video(scene, tracker, str(exc), on_settled)
+                return
+            self._generate_scene_video(scene, plan, video_adapter, tracker, on_settled=on_settled)
 
-        def advance():
-            self._run_video_chain(rest, tracker)
-
-        self._generate_scene_video(scene, plan, video_adapter, tracker, on_settled=advance)
+        _dispatch_window(list(remaining), concurrency, start_one)
 
     def regenerate_scene_video(self, scene_id: str) -> None:
         """Single-scene video regenerate, bypassing the batch/gate - mirrors

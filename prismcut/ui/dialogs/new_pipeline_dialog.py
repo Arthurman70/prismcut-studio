@@ -313,7 +313,13 @@ class NewPipelineDialog(QDialog):
             lipsync_model=lipsync.key if lipsync else "",
             reference_images=list(self.references),
             default_scene_duration=self.default_seconds.value(),
-            scene_count_hint=self._scene_count_hint())
+            scene_count_hint=self._scene_count_hint(),
+            # The MoviePipeline field itself defaults to 1 (so an
+            # already-saved pipeline missing this field behaves exactly as
+            # before) - new movies opt into a faster default explicitly
+            # here instead, since a noticeably quicker feel by default is
+            # the whole point of offering this knob.
+            video_concurrency=3)
         if self._imported_scenes:
             self.pipeline.scenes = self._imported_scenes
             _seed_scene_durations(self.pipeline.scenes, self.pipeline.default_scene_duration, video)

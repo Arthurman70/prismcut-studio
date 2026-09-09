@@ -79,6 +79,13 @@ class _Runner(QRunnable):
     def run(self) -> None:
         job = self.job
         if job.cancelled:
+            # Still queued (never started) at cancellation time - emit the
+            # same "failed" signal the post-start cancellation branch below
+            # already does, so a caller counting completions (e.g.
+            # pipeline_orchestrator._BatchTracker) isn't left waiting on a
+            # job that will now never report in at all.
+            job.status = "cancelled"
+            _safe_emit(job.failed, "Cancelled")
             return
         job.status = "running"
         _safe_emit(job.started)

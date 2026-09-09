@@ -1950,6 +1950,95 @@ def test_video_batch_generates_sequentially_with_per_scene_model_override(win):
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_video_batch_honors_pipelines_own_video_concurrency_and_still_finishes_all_scenes(win):
+    """run_video_batch()'s concurrency default comes from the pipeline's own
+    MoviePipeline.video_concurrency field (not a hardcoded 1) - with it set
+    above 1, every scene must still end up with a video, regardless of how
+    the real dispatch happens to interleave. Exact interleaving under real
+    concurrency isn't asserted here (that's covered precisely, with full
+    control over timing, by the pure _dispatch_window tests in
+    test_pipeline_orchestrator.py) - this is the end-to-end wiring check."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    class FakeVideoAdapter:
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            return __file__
+
+    pipeline = MoviePipeline(name="Concurrency wiring test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             video_concurrency=3)
+    pipeline.scenes = [new_scene(0), new_scene(1), new_scene(2), new_scene(3)]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    run._ensure_tracks()
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeVideoAdapter()
+    try:
+        run.run_video_batch()   # no explicit concurrency= - must fall back to pipeline.video_concurrency
+        assert _wait_until(lambda: all(s.video.active for s in pipeline.scenes), timeout=10.0)
+        assert win.undo_stack.canUndo()
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_video_batch_concurrency_1_still_generates_strictly_sequentially(win):
+    """The default (and every pre-existing saved pipeline's) concurrency
+    must reproduce today's exact one-at-a-time behavior - a regression
+    check distinct from test_video_batch_generates_sequentially_with_per_
+    scene_model_override above (which covers this implicitly via its own
+    default-constructed pipeline); this one is explicit about WHY."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    calls = []
+
+    class FakeVideoAdapter:
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            calls.append(sum(1 for s in pipeline.scenes if s.video.active is not None))
+            return __file__
+
+    pipeline = MoviePipeline(name="Concurrency 1 test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    assert pipeline.video_concurrency == 1   # the dataclass default
+    pipeline.scenes = [new_scene(0), new_scene(1), new_scene(2)]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    run._ensure_tracks()
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeVideoAdapter()
+    try:
+        run.run_video_batch()
+        assert _wait_until(lambda: all(s.video.active for s in pipeline.scenes), timeout=10.0)
+        assert calls == [0, 1, 2]   # each call sees one more finished scene than the last
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_concurrency_combo_syncs_from_pipeline_and_persists_changes(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Concurrency combo test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             video_concurrency=2)
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    try:
+        assert win.movie.concurrency_combo.currentData() == 2   # synced from the loaded pipeline
+
+        idx = win.movie.concurrency_combo.findData(5)
+        win.movie.concurrency_combo.setCurrentIndex(idx)
+        assert pipeline.video_concurrency == 5   # written straight back onto the pipeline
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_scene_row_model_override_rebuilds_param_form_live(win):
     """Switching a scene's model-override combo must rebuild that stage's
     param form against the newly selected model's own schema - otherwise

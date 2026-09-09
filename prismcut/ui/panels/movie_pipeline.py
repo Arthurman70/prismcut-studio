@@ -318,6 +318,21 @@ class MoviePipelinePanel(QWidget):
             "scenes still need that stage, in order, so this doubles as resuming a "
             "previous run.")
         size_row.addWidget(self.batch_size_combo)
+        size_row.addWidget(label("Concurrent video:", dim=True))
+        self.concurrency_combo = QComboBox()
+        self.concurrency_combo.addItem("1 (sequential)", 1)
+        self.concurrency_combo.addItem("2 at once", 2)
+        self.concurrency_combo.addItem("3 at once", 3)
+        self.concurrency_combo.addItem("5 at once", 5)
+        self.concurrency_combo.setToolTip(
+            "How many scenes' video generation run at once (during the video stage below, "
+            "or 🔫 Fire) - higher finishes faster but is more likely to trip a provider's "
+            "own rate limit, so lower this again if generations start failing under load. "
+            "Image generation always runs one scene at a time regardless of this setting - "
+            "each scene's image uses earlier scenes as a visual-continuity reference, so it "
+            "can't be reordered or parallelized the way video can.")
+        self.concurrency_combo.currentIndexChanged.connect(self._concurrency_changed)
+        size_row.addWidget(self.concurrency_combo)
         size_row.addStretch(1)
         outer.addLayout(size_row)
 
@@ -473,6 +488,15 @@ class MoviePipelinePanel(QWidget):
     def _batch_limit(self) -> int | None:
         return self.batch_size_combo.currentData()
 
+    def _concurrency_changed(self, _idx: int = 0):
+        # Unlike batch size (transient UI-only state), concurrency is
+        # persisted per-pipeline - Fire and a later session's "Continue"
+        # click should both keep using whatever this movie was configured
+        # with, not silently reset to some UI default.
+        if self.run:
+            self.run.pipeline.video_concurrency = self.concurrency_combo.currentData()
+            self.run.pipeline.save()
+
     def _relabel_stage_button(self, btn: QPushButton, icon: str, noun: str, total: int,
                               remaining: int, stage_label: str) -> None:
         """Shared by the images/video buttons: 'Generate' before anything in
@@ -502,6 +526,11 @@ class MoviePipelinePanel(QWidget):
             self.summary.setText(f"“{p.name}” · {len(p.scenes)} scene(s) · status: {p.status}")
         else:
             self.summary.setText("No movie loaded yet — click “New movie…” to describe one.")
+        if p:
+            self.concurrency_combo.blockSignals(True)
+            idx = self.concurrency_combo.findData(p.video_concurrency)
+            self.concurrency_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self.concurrency_combo.blockSignals(False)
         busy = bool(p and p.status in BUSY_STATUSES)
         total = len(p.scenes) if p else 0
         images_remaining = sum(1 for s in p.scenes if s.image.active is None) if p else 0
