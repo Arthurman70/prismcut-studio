@@ -20,7 +20,7 @@ from ...core.pipeline import MoviePipeline, Scene
 from ...core.pipeline_orchestrator import PipelineRun
 from ..dialogs.new_pipeline_dialog import NewPipelineDialog
 from ..widgets.common import (STATUS_ICONS, CollapsibleSection, DropAcceptor, ModelCombo,
-                              accent_button, confirm_destructive, label)
+                              TakeFilmstrip, accent_button, confirm_destructive, label)
 from .generate_panel import ParamForm
 
 BUSY_STATUSES = ("images_running", "video_running")
@@ -143,6 +143,12 @@ class SceneRow(QWidget):
         self.image_param_form = ParamForm()
         v.addWidget(self.image_param_form)
 
+        self.image_takes_label = label("Past image takes — click to switch", dim=True)
+        v.addWidget(self.image_takes_label)
+        self.image_takes = TakeFilmstrip()
+        self.image_takes.takeSelected.connect(self._image_take_selected)
+        v.addWidget(self.image_takes)
+
         v.addWidget(label("Video model (optional override)", dim=True))
         self.video_model_combo = ModelCombo(registry, settings, ("video_generate",),
                                             allow_none=True,
@@ -155,6 +161,12 @@ class SceneRow(QWidget):
         v.addWidget(self.video_param_label)
         self.video_param_form = ParamForm()
         v.addWidget(self.video_param_form)
+
+        self.video_takes_label = label("Past video takes — click to switch", dim=True)
+        v.addWidget(self.video_takes_label)
+        self.video_takes = TakeFilmstrip()
+        self.video_takes.takeSelected.connect(self._video_take_selected)
+        v.addWidget(self.video_takes)
 
         self._rebuild_image_param_form()
         self._rebuild_video_param_form()
@@ -209,6 +221,27 @@ class SceneRow(QWidget):
         if scene_id == self.scene.id:
             self.sync()
 
+    def _image_take_selected(self, index: int):
+        self.run.set_active_take(self.scene.id, "image", index)
+
+    def _video_take_selected(self, index: int):
+        self.run.set_active_take(self.scene.id, "video", index)
+
+    def _sync_take_filmstrip(self, history, filmstrip: TakeFilmstrip, label_widget) -> None:
+        # Hidden for the common single-take case - browsing has nothing to
+        # offer until there's actually more than one take to pick between,
+        # and this Details section is already fairly busy.
+        show = len(history.entries) > 1
+        label_widget.setVisible(show)
+        filmstrip.setVisible(show)
+        if not show:
+            return
+        thumbs = []
+        for entry in history.entries:
+            item = self.run.win.project.media.get(entry.media_id) if entry.media_id else None
+            thumbs.append(media_utils.thumbnail(item.path) if item else None)
+        filmstrip.set_entries(thumbs, history.current)
+
     def sync(self):
         self.icon.setText(_scene_status_icon(self.scene))
         n = self.scene.index + 1
@@ -237,6 +270,8 @@ class SceneRow(QWidget):
         # scene's script). A focused field means the user owns its text.
         if not self.script_edit.hasFocus() and self.script_edit.toPlainText() != self.scene.script:
             self.script_edit.setPlainText(self.scene.script)
+        self._sync_take_filmstrip(self.scene.image, self.image_takes, self.image_takes_label)
+        self._sync_take_filmstrip(self.scene.video, self.video_takes, self.video_takes_label)
 
     def _edit_prompt(self):
         text, ok = QInputDialog.getMultiLineText(

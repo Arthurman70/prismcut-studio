@@ -1538,6 +1538,239 @@ def test_regenerate_current_stage_regenerates_video_when_video_already_exists(wi
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_set_active_take_video_switches_the_timeline_clip_to_the_older_take(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Take switch video test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        take0 = win.bin.add_generated(__file__, {"mode": "video", "n": 0})
+        take1 = win.bin.add_generated(__file__, {"mode": "video", "n": 1})
+        scene.video.push(StageAsset(media_id=take0.id, source="generated"))
+        scene.video.push(StageAsset(media_id=take1.id, source="generated"))
+        clip = win.timeline.add_media_at_playhead(
+            take1.id, pipeline.video_track_id, 2.0, 5.0, label="Scene 1")
+        scene.clip_ids["video"] = clip.id
+        assert scene.video.current == 1
+
+        run.set_active_take(scene.id, "video", 0)
+
+        assert scene.video.current == 0
+        new_clip = win.project.clips[scene.clip_ids["video"]]
+        assert new_clip.id != clip.id
+        assert new_clip.media_id == take0.id
+        assert clip.id not in win.project.clips   # old clip removed, not left dangling
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_set_active_take_image_updates_timeline_when_no_video_exists_yet(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Take switch image test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        take0 = win.bin.add_generated(__file__, {"mode": "image", "n": 0})
+        take1 = win.bin.add_generated(__file__, {"mode": "image", "n": 1})
+        scene.image.push(StageAsset(media_id=take0.id, source="generated"))
+        scene.image.push(StageAsset(media_id=take1.id, source="generated"))
+        clip = win.timeline.add_media_at_playhead(
+            take1.id, pipeline.video_track_id, 2.0, 5.0, label="Scene 1")
+        scene.clip_ids["image"] = clip.id
+
+        run.set_active_take(scene.id, "image", 0)
+
+        new_clip = win.project.clips[scene.clip_ids["image"]]
+        assert new_clip.media_id == take0.id
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_set_active_take_image_does_not_touch_timeline_once_a_video_exists(win):
+    """The asymmetry between the two stages: once a scene has a finished
+    video, clicking an older IMAGE thumbnail must only move the pointer (a
+    future image regenerate/continuity-ref would see it) - not delete the
+    finished video and regress the timeline to a static image, the same
+    guard _finish_scene_image already applies to a fresh regenerate."""
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Take switch guard test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        img0 = win.bin.add_generated(__file__, {"mode": "image", "n": 0})
+        img1 = win.bin.add_generated(__file__, {"mode": "image", "n": 1})
+        scene.image.push(StageAsset(media_id=img0.id, source="generated"))
+        scene.image.push(StageAsset(media_id=img1.id, source="generated"))
+        vid = win.bin.add_generated(__file__, {"mode": "video"})
+        scene.video.push(StageAsset(media_id=vid.id, source="generated"))
+        video_clip = win.timeline.add_media_at_playhead(
+            vid.id, pipeline.video_track_id, 2.0, 5.0, label="Scene 1")
+        scene.clip_ids["video"] = video_clip.id   # "video" present, "image" absent - the guard's condition
+
+        run.set_active_take(scene.id, "image", 0)
+
+        assert scene.image.current == 0                        # pointer still moves...
+        assert scene.clip_ids.get("video") == video_clip.id    # ...but the timeline is untouched
+        assert video_clip.id in win.project.clips
+        assert win.project.clips[video_clip.id].media_id == vid.id
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_set_active_take_video_resolves_to_the_linked_lipsync_media(win):
+    """scene.video and scene.lipsync are two independent histories -
+    switching to a video take that has a linked lip-synced replacement must
+    show THAT media, not the plain pre-lip-sync video."""
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Take switch lipsync test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        plain_take0 = win.bin.add_generated(__file__, {"mode": "video", "n": 0})
+        plain_take1 = win.bin.add_generated(__file__, {"mode": "video", "n": 1})
+        synced_take0 = win.bin.add_generated(__file__, {"mode": "lip_sync", "n": 0})
+        scene.video.push(StageAsset(media_id=plain_take0.id, source="generated"))
+        scene.lipsync.push(StageAsset(media_id=synced_take0.id, source="generated", video_index=0))
+        scene.video.push(StageAsset(media_id=plain_take1.id, source="generated"))   # a later, un-synced take
+        clip = win.timeline.add_media_at_playhead(
+            plain_take1.id, pipeline.video_track_id, 2.0, 5.0, label="Scene 1")
+        scene.clip_ids["video"] = clip.id
+
+        run.set_active_take(scene.id, "video", 0)   # back to the first take, which has a lipsync pass
+
+        new_clip = win.project.clips[scene.clip_ids["video"]]
+        assert new_clip.media_id == synced_take0.id   # the lip-synced media, not plain_take0
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_set_active_take_out_of_bounds_index_is_a_noop(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Take switch bounds test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        vid = win.bin.add_generated(__file__, {"mode": "video"})
+        scene.video.push(StageAsset(media_id=vid.id, source="generated"))
+        clip = win.timeline.add_media_at_playhead(
+            vid.id, pipeline.video_track_id, 2.0, 5.0, label="Scene 1")
+        scene.clip_ids["video"] = clip.id
+
+        run.set_active_take(scene.id, "video", 5)     # way out of range
+        run.set_active_take(scene.id, "video", -1)    # negative
+
+        assert scene.video.current == 0               # untouched
+        assert scene.clip_ids["video"] == clip.id     # untouched
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_set_active_take_unknown_stage_raises(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Take switch stage validation test")
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    try:
+        with pytest.raises(ValueError):
+            win.movie.run.set_active_take(pipeline.scenes[0].id, "audio", 0)
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_set_active_take_video_switch_also_removes_the_old_companion_audio_clip(win, monkeypatch,
+                                                                                 tmp_path):
+    """Repeated take-switching on a scene whose video carries embedded
+    audio must not leak one orphaned companion audio clip per switch."""
+    from prismcut.core import project as project_mod
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    counter = [0]
+
+    def fake_extract_audio(src, dst_ext=".m4a"):
+        counter[0] += 1
+        out = tmp_path / f"extracted_{counter[0]}.m4a"
+        out.write_bytes(b"fake-audio")
+        return out
+
+    monkeypatch.setattr(project_mod.media_utils, "extract_audio", fake_extract_audio)
+
+    pipeline = MoviePipeline(name="Take switch audio-split test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+
+        def make_video_item(name):
+            p = tmp_path / name
+            p.write_bytes(b"fake-mp4")
+            item = win.project.add_media(p)
+            item.has_audio = True
+            return item
+
+        take0 = make_video_item("take0.mp4")
+        take1 = make_video_item("take1.mp4")
+        scene.video.push(StageAsset(media_id=take0.id, source="generated"))
+        scene.video.push(StageAsset(media_id=take1.id, source="generated"))
+        before_add = set(win.project.clips.keys())   # win is a shared fixture - isolate our own delta
+        # Route the INITIAL placement through _swap_scene_visual_clip itself
+        # (not a raw add_media_at_playhead) so clip_ids["video_audio"] gets
+        # recorded the same way a real generation completion would - a scene
+        # only ever reaches "has a video showing" via this exact method.
+        run._swap_scene_visual_clip(scene, take1, "video", "initial placement")
+        before_switch = set(win.project.clips.keys()) - before_add
+        assert len(before_switch) == 2   # take1's video clip + its auto-split audio companion
+        assert "video_audio" in scene.clip_ids
+
+        run.set_active_take(scene.id, "video", 0)
+
+        after_switch = set(win.project.clips.keys()) - before_add
+        assert len(after_switch) == 2               # still exactly one video clip + one companion
+        assert not (before_switch & after_switch)   # BOTH old clips gone, not just the video one
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_scene_image_params_override_merges_with_model_defaults(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 
@@ -1724,6 +1957,69 @@ def test_scene_row_details_panel_prefills_and_saves_script_and_params(win):
         assert scene.video_params["duration"] == 3
         # sync() must not clobber the just-saved text back to some stale value
         assert row.script_edit.toPlainText() == "A lighthouse at dawn instead."
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_row_take_filmstrips_hidden_with_zero_or_one_take(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Filmstrip hidden test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    try:
+        row = win.movie._rows[scene.id]
+        # isHidden() (this widget's own explicit flag) rather than
+        # isVisible() (which also requires the WHOLE ancestor chain shown -
+        # the Movie Pipeline tab isn't necessarily the active one here, and
+        # Details starts collapsed, neither of which this test cares about).
+        assert row.image_takes.isHidden()   # zero takes yet
+        assert row.video_takes.isHidden()
+
+        img = win.bin.add_generated(__file__, {"mode": "image"})
+        scene.image.push(StageAsset(media_id=img.id, source="generated"))
+        row.sync()
+        assert row.image_takes.isHidden()   # exactly one take - nothing to browse
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_row_take_filmstrip_shows_and_switches_with_two_or_more_takes(win):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Filmstrip switch test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        take0 = win.bin.add_generated(__file__, {"mode": "image", "n": 0})
+        take1 = win.bin.add_generated(__file__, {"mode": "image", "n": 1})
+        scene.image.push(StageAsset(media_id=take0.id, source="generated"))
+        scene.image.push(StageAsset(media_id=take1.id, source="generated"))
+        clip = win.timeline.add_media_at_playhead(
+            take1.id, pipeline.video_track_id, 2.0, 5.0, label="Scene 1")
+        scene.clip_ids["image"] = clip.id
+
+        row = win.movie._rows[scene.id]
+        row.sync()
+        assert not row.image_takes.isHidden()
+        assert row.image_takes.list.count() == 2
+        assert row.image_takes.list.currentRow() == 1   # synced to the active (newest) take
+
+        row.image_takes.takeSelected.emit(0)   # simulate clicking the first thumbnail
+
+        assert scene.image.current == 0
+        new_clip = win.project.clips[scene.clip_ids["image"]]
+        assert new_clip.media_id == take0.id
     finally:
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from ..providers.base import ChatMessage
 from . import http
 from . import media as media_utils
-from .pipeline import MoviePipeline, Scene, StageAsset, new_scene
+from .pipeline import MoviePipeline, Scene, SceneHistory, StageAsset, new_scene
 
 
 @dataclass
@@ -817,6 +817,11 @@ class PipelineRun(QObject):
         """The concrete first-of-its-kind 'stage N's on_done submits stage
         N+1' chain: the video job's on_done, above, calls this, which
         submits a SECOND job rather than finishing the scene immediately."""
+        # scene.video.push() in _finish_scene_video just ran, so .current
+        # points at the video entry this lip-sync pass is chaining from -
+        # capture it now (not inside done() below) in case anything else
+        # changes scene.video.current before this async job settles.
+        video_index = scene.video.current
         lipsync_adapter = self.win.get_adapter(lipsync_model.provider)
         aud = scene.audio.active
         aud_item = self.win.project.media.get(aud.media_id) if aud else None
@@ -841,7 +846,8 @@ class PipelineRun(QObject):
                 "provider": lipsync_model.provider, "model": lipsync_model.id, "mode": "lip_sync",
                 "source": "pipeline", "pipeline_id": self.pipeline.id, "scene_id": scene.id})
             scene.lipsync.push(StageAsset(media_id=item.id, provider=lipsync_model.provider,
-                                          model=lipsync_model.id, source="generated", created=time.time()))
+                                          model=lipsync_model.id, source="generated", created=time.time(),
+                                          video_index=video_index))
             self._swap_interim_for_final(scene, item)
             self.sceneChanged.emit(scene.id)
             tracker.one_done(True)
@@ -871,12 +877,22 @@ class PipelineRun(QObject):
         slot on the timeline."""
         old_clip_id = scene.clip_ids.get("video") or scene.clip_ids.get("image")
         old_clip = self.win.project.clips.get(old_clip_id) if old_clip_id else None
+        old_audio_clip_id = scene.clip_ids.get("video_audio")
         self.win.undo_stack.beginMacro(f"Movie scene {scene.index + 1}: {macro_label}")
         if old_clip:
             start, track_id, duration = old_clip.start, old_clip.track_id, old_clip.duration
             self.win.timeline.delete_clip(old_clip.id)
         else:
             start, track_id, duration = self._scene_fallback_start(scene), self.pipeline.video_track_id, 3.0
+        if old_audio_clip_id:
+            # add_media_at_playhead auto-splits a video's embedded audio
+            # onto a companion clip (project.split_video_audio) whenever
+            # the video item has_audio - delete_clip(old_clip.id) above
+            # knows nothing about that companion, so without this, every
+            # swap of a scene whose video carries embedded audio (take-
+            # switching makes this routine, not rare) leaks one orphaned
+            # audio clip.
+            self.win.timeline.delete_clip(old_audio_clip_id)
         # A finished video's own real (already-probed) length is the actual
         # authoritative answer to "how long is this scene" once one exists -
         # the duration inherited above is just the interim image+audio
@@ -892,7 +908,64 @@ class PipelineRun(QObject):
         if new_clip:
             scene.clip_ids.pop("image", None)
             scene.clip_ids.pop("video", None)
+            scene.clip_ids.pop("video_audio", None)
             scene.clip_ids[clip_key] = new_clip.id
+            companion = next(
+                (c for c in self.win.project.clips.values()
+                 if c.id != new_clip.id and c.start == new_clip.start
+                 and getattr(self.win.project.media.get(c.media_id), "meta", {})
+                     .get("video_media_id") == item.id),
+                None)
+            if companion:
+                scene.clip_ids["video_audio"] = companion.id
+        self.pipeline.save()
+
+    def set_active_take(self, scene_id: str, stage: str, index: int) -> None:
+        """Moves a scene's image/video SceneHistory.current pointer to an
+        older (or newer) take without regenerating anything - the "pick
+        your favorite" half of history tracking (SceneHistory already
+        retains every take via .push(); only picking an older one back up
+        was missing). Scoped to image and video - the two stages that
+        matter for visual "keep hits, reroll misses" browsing - audio/
+        lipsync share the identical SceneHistory shape and could get the
+        same treatment later without any new plumbing."""
+        if stage not in ("image", "video"):
+            raise ValueError(f"set_active_take only supports 'image'/'video', got {stage!r}")
+        scene = self.pipeline.scene(scene_id)
+        if not scene:
+            return
+        history: SceneHistory = getattr(scene, stage)
+        if not (0 <= index < len(history.entries)):
+            return
+        history.current = index
+        asset = history.active
+        if stage == "image":
+            # Mirrors _finish_scene_image's own rule exactly: once a scene
+            # has a finished video, the timeline is showing that video, not
+            # this scene's image slot at all - switching older image takes
+            # must only touch the timeline while the image is STILL what's
+            # showing, or clicking a thumbnail on a "done" scene would
+            # delete its finished video and regress the timeline to a
+            # static image.
+            if "image" in scene.clip_ids and "video" not in scene.clip_ids:
+                item = self.win.project.media.get(asset.media_id) if asset else None
+                if item:
+                    self._swap_scene_visual_clip(scene, item, "image", "switch image take")
+        else:
+            # Video-stage switching needs no such guard - once a video
+            # exists it's always what's showing, so switching it is always
+            # safe. But the plain video and any lip-synced take chained
+            # from it are two independent histories - if this video index
+            # has a linked lipsync entry, THAT media is what's actually
+            # meant to be showing, not the plain pre-lip-sync video.
+            media_id = asset.media_id if asset else None
+            lip = next((e for e in scene.lipsync.entries if e.video_index == index), None)
+            if lip:
+                media_id = lip.media_id
+            item = self.win.project.media.get(media_id) if media_id else None
+            if item:
+                self._swap_scene_visual_clip(scene, item, "video", "switch video take")
+        self.sceneChanged.emit(scene.id)
         self.pipeline.save()
 
     def _swap_interim_for_final(self, scene: Scene, video_item) -> None:

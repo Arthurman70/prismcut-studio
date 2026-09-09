@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QSyntaxHighlighter, QTextCharFormat
+from PySide6.QtGui import QColor, QIcon, QPixmap, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QPushButton, QSlider,
-                               QSpinBox, QToolButton, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+                               QPushButton, QSlider, QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
@@ -337,3 +337,53 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text: str):
         for start, end in spellcheck.misspelled_spans(text):
             self.setFormat(start, end - start, self._fmt)
+
+
+# ------------------------------------------------------------- take history
+
+class TakeFilmstrip(QWidget):
+    """Thumbnail strip for browsing a take history - 'vN' icons, click one
+    to jump to it. Mirrors Photo Studio's own versions/vindex filmstrip
+    (ui/panels/photo_studio.py) - that one is inline instance state with no
+    extracted widget; this is the reusable version, generic over whatever
+    "here are thumbnail paths, here's which one is active" a caller has, so
+    the Movie Pipeline's image and video take-browsers (and anything else
+    with a similar append-only take log later) share one implementation
+    instead of each reimplementing this shape inline. The caller resolves
+    thumbnail paths itself (it knows the right project/media lookup) - this
+    widget only renders whatever it's handed and reports back which one got
+    clicked."""
+    takeSelected = Signal(int)   # the picked entry's index
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.list = QListWidget()
+        self.list.setFlow(QListWidget.Flow.LeftToRight)
+        self.list.setFixedHeight(64)
+        self.list.setIconSize(QPixmap(72, 48).size())
+        self.list.itemClicked.connect(self._item_clicked)
+        lay.addWidget(self.list)
+
+    def set_entries(self, thumbnails: list, current: int) -> None:
+        """thumbnails[i] is a resolved thumbnail path (or None/falsy) for
+        take i. Rebuilds the whole strip - cheap enough for the small
+        number of takes a scene realistically accumulates, and simplest to
+        keep correct."""
+        self.list.blockSignals(True)
+        self.list.clear()
+        for i, thumb in enumerate(thumbnails):
+            icon = QIcon(QPixmap(str(thumb)).scaled(
+                72, 48, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)) if thumb else QIcon()
+            item = QListWidgetItem(icon, f"v{i + 1}")
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            self.list.addItem(item)
+        if 0 <= current < self.list.count():
+            self.list.setCurrentRow(current)
+        self.list.blockSignals(False)
+
+    def _item_clicked(self, item: QListWidgetItem) -> None:
+        self.takeSelected.emit(item.data(Qt.ItemDataRole.UserRole))

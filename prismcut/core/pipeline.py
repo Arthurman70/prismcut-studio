@@ -41,6 +41,14 @@ class StageAsset:
     model: str = ""
     params: dict = field(default_factory=dict)
     created: float = 0.0
+    # lipsync entries only: which entry (by index) of this same Scene's OWN
+    # video.entries this lip-sync pass was chained from - scene.video and
+    # scene.lipsync are two independent SceneHistory logs with nothing else
+    # linking them, so take-switching needs this to know a given video take
+    # has a lip-synced replacement to show instead of the plain video.
+    # -1 = not a lipsync entry, or chained from an untracked video (should
+    # not happen for anything pushed after this field was added).
+    video_index: int = -1
 
 
 @dataclass
