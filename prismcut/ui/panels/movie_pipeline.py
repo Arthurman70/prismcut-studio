@@ -345,6 +345,17 @@ class MoviePipelinePanel(QWidget):
         stage_row.addWidget(self.video_btn)
         outer.addLayout(stage_row)
 
+        fire_row = QHBoxLayout()
+        self.fire_btn = accent_button("🔫 Fire — finish this movie")
+        self.fire_btn.setToolTip(
+            "Runs whatever's left across both stages above, back to back, behind one "
+            "combined cost confirmation - ignores the batch size above and always targets "
+            "every remaining scene. The two stage buttons above still work exactly as "
+            "before if you'd rather review images before committing to video.")
+        self.fire_btn.clicked.connect(self._run_fire)
+        fire_row.addWidget(self.fire_btn)
+        outer.addLayout(fire_row)
+
         self.list_host = QWidget()
         self.list_lay = QVBoxLayout(self.list_host)
         self.list_lay.setContentsMargins(0, 0, 0, 0)
@@ -542,6 +553,12 @@ class MoviePipelinePanel(QWidget):
         self.images_btn.setEnabled(bool(p and p.scenes) and images_remaining > 0 and not busy)
         self.video_btn.setEnabled(bool(p and p.scenes and any(s.image.active for s in p.scenes))
                                   and video_remaining > 0 and not busy)
+        # Fire doesn't share video_btn's "at least one image already exists"
+        # precondition - it always does images-first itself (see _run_fire),
+        # so it's meaningful the moment scenes exist and either stage has
+        # anything left, even before a single image has ever been generated.
+        self.fire_btn.setEnabled(bool(p and p.scenes) and (images_remaining > 0 or video_remaining > 0)
+                                 and not busy)
         needs_script = bool(p and not p.scenes)
         self.retry_script_btn.setVisible(needs_script)
         self.retry_script_btn.setEnabled(needs_script and not self._script_running)
@@ -571,6 +588,36 @@ class MoviePipelinePanel(QWidget):
         scenes = sorted((s for s in self.run.pipeline.scenes
                         if getattr(s, active).active is None), key=lambda s: s.index)
         return scenes if limit is None else scenes[:limit]
+
+    def _estimate_lipsync_cost(self, video_targets: list) -> float | None:
+        """Lip-sync pricing for Fire's combined estimate. The two existing
+        per-stage buttons have never priced this at all - a pre-existing
+        gap that silently omits lip-sync cost from their estimates whenever
+        pipeline.lipsync_model is configured - worth fixing here since
+        Fire's whole pitch is one honest combined number. Returns 0.0 (not
+        None) when there's nothing to price (no lip-sync model configured,
+        or no target scene has use_lipsync set) - only None when a
+        configured model genuinely can't be priced, matching
+        _estimate_batch_cost's own None convention."""
+        lipsync_key = self.run.pipeline.lipsync_model
+        if not lipsync_key:
+            return 0.0
+        scenes = [s for s in video_targets if s.use_lipsync]
+        if not scenes:
+            return 0.0
+        model = self.registry.by_key(lipsync_key)
+        if not model:
+            return None
+        total = 0.0
+        for scene in scenes:
+            duration = (scene.video_params.get("duration")
+                       or self.run.pipeline.default_scene_duration or None)
+            cost = cost_estimator.estimate_cost(model, model.default_params(),
+                                                duration_seconds=duration)
+            if cost is None:
+                return None
+            total += cost
+        return total
 
     def _estimate_batch_cost(self, pipeline_model_key: str, targets: list, stage: str) -> float | None:
         """Total estimated $ across `targets`, honoring each scene's own
@@ -649,3 +696,60 @@ class MoviePipelinePanel(QWidget):
                 "Generate"):
             return
         self.run.run_video_batch(limit=limit)
+
+    def _run_fire(self):
+        """One-click path: runs whatever's left across BOTH stages, back to
+        back, behind a single combined confirm - composes the two existing
+        batch methods via run_image_batch's own on_all_done parameter, so
+        if images are already fully done it correctly degrades to "just run
+        video" (run_image_batch finds zero targets and calls on_all_done()
+        immediately). Deliberately ignores the "Batch size" limiter above
+        and always targets every remaining scene in both stages: under a
+        small limit, the image and video sub-batches aren't guaranteed to
+        target the same scenes (video's own "first N missing, by index"
+        filter can pick entirely different scenes than images just
+        generated), which would make one combined confirm dialog actively
+        misleading. The two stage buttons above are untouched and still
+        honor the batch size, for anyone who wants that finer control."""
+        if not self.run:
+            return
+        if not self.run.pipeline.scenes:
+            self.status.emit("No scenes to generate yet - the script breakdown hasn't "
+                             "produced any scenes.")
+            return
+        image_targets = self._stage_targets("image", None)
+        video_targets = self._stage_targets("video", None)
+        if not image_targets and not video_targets:
+            self.status.emit("Every scene already has both an image and a video.")
+            return
+        pipeline = self.run.pipeline
+        parts = []
+        total = 0.0
+        any_unknown = False
+        if image_targets:
+            cost = self._estimate_batch_cost(pipeline.image_model, image_targets, "image")
+            parts.append(f"Images: {self._batch_wording(len(image_targets), None)}"
+                         f"{self._cost_phrase(cost)}")
+            any_unknown = any_unknown or cost is None
+            total += cost or 0.0
+        if video_targets:
+            cost = self._estimate_batch_cost(pipeline.video_model, video_targets, "video")
+            parts.append(f"Video: {self._batch_wording(len(video_targets), None)}"
+                         f"{self._cost_phrase(cost)}")
+            any_unknown = any_unknown or cost is None
+            total += cost or 0.0
+            lip_cost = self._estimate_lipsync_cost(video_targets)
+            any_unknown = any_unknown or lip_cost is None
+            if lip_cost:
+                parts.append(f"lip-sync ~${lip_cost:,.2f}")
+                total += lip_cost
+        total_phrase = "" if any_unknown else f" — combined est. ${total:,.2f}"
+        message = (
+            f"This finishes the whole movie: {'; '.join(parts)}{total_phrase}. Each call "
+            "spends your own API credits - this estimate doesn't include the cost of an "
+            "automatic retry if a scene is rejected by moderation. Continue?")
+        if not confirm_destructive(
+                self.win, self.settings, "pipeline_run_fire_batch",
+                "Fire — generate everything remaining", message, "Fire"):
+            return
+        self.run.run_image_batch(on_all_done=self.run.run_video_batch)

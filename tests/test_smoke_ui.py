@@ -2109,6 +2109,163 @@ def test_run_images_confirm_dialog_includes_cost_estimate(win, monkeypatch):
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_fire_button_enablement_mirrors_the_or_of_the_two_stage_buttons(win):
+    """Fire doesn't share video_btn's "at least one image already exists"
+    precondition - it always runs images first itself, so it's meaningful
+    the moment scenes exist and either stage has anything left, even before
+    a single image has ever been generated (unlike video_btn, which stays
+    disabled at that point)."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Fire enablement test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1)]
+    win.movie._set_pipeline(pipeline)
+    try:
+        assert win.movie.images_btn.isEnabled()
+        assert not win.movie.video_btn.isEnabled()   # no image exists yet
+        assert win.movie.fire_btn.isEnabled()         # Fire still can - it does images first
+
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+        assert not win.movie.fire_btn.isEnabled()     # no scenes at all
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_fire_confirm_dialog_uses_its_own_settings_key_and_combined_cost(win, monkeypatch):
+    """Fire's 'don't ask again' suppression must be independent of either
+    existing stage button's - reusing one of their keys would mean a user
+    who'd previously suppressed the (smaller) single-stage confirm gets
+    Fire's larger combined spend silently auto-approved too."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Fire cost dialog test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1)]
+    win.movie._set_pipeline(pipeline)
+    captured = {}
+
+    def fake_confirm(parent, settings, key, title, text, ok_text):
+        captured["key"] = key
+        captured["text"] = text
+        return False   # decline - nothing must actually fire
+
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive", fake_confirm)
+    try:
+        win.movie._run_fire()
+        assert captured["key"] == "pipeline_run_fire_batch"
+        assert captured["key"] not in ("pipeline_run_image_batch", "pipeline_run_video_batch")
+        assert "Images:" in captured["text"]
+        assert "Video:" in captured["text"]
+        assert "combined est. $" in captured["text"]
+        assert "moderation" in captured["text"]
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_fire_confirm_dialog_includes_lipsync_cost_when_configured(win, monkeypatch):
+    """A pre-existing gap in both individual stage buttons: neither has ever
+    priced a configured lip-sync pass at all. Fire fixes this for its own
+    combined estimate."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Fire lipsync cost test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             lipsync_model="fal::fal-ai/sync-lipsync/v2/pro")
+    scene = new_scene(0)
+    scene.use_lipsync = True
+    scene.video_params["duration"] = 6.0
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    captured = {}
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
+                        lambda parent, settings, key, title, text, ok_text:
+                        captured.setdefault("text", text) and False)
+    try:
+        win.movie._run_fire()
+        assert "lip-sync ~$" in captured["text"]
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_fire_runs_images_then_chains_into_video_for_every_remaining_scene(win, monkeypatch):
+    """The actual one-click behavior: confirming Fire on a movie with no
+    images yet ends with every scene having BOTH an image and a video,
+    without any separate manual click for the video stage."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    class FakeAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            return [__file__]
+
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            return __file__
+
+    pipeline = MoviePipeline(name="Fire end-to-end test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1)]
+    win.movie._set_pipeline(pipeline)
+    win.movie.run._ensure_tracks()
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
+                        lambda parent, settings, key, title, text, ok_text: True)
+    try:
+        win.movie._run_fire()
+        assert _wait_until(lambda: all(s.video.active for s in pipeline.scenes), timeout=10.0)
+        assert all(s.image.active for s in pipeline.scenes)
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_fire_degrades_to_just_video_when_every_image_already_exists(win, monkeypatch):
+    """run_image_batch finding zero remaining targets must call
+    on_all_done() immediately, so Fire correctly falls straight through to
+    the video stage instead of doing nothing."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    class FakeVideoOnlyAdapter:
+        def generate_image(self, model_id, prompt, params, refs=None):
+            raise AssertionError("images are already done - must not be called")
+
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            return __file__
+
+    pipeline = MoviePipeline(name="Fire video-only test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    scene = new_scene(0)
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    win.movie.run._ensure_tracks()
+    img_item = win.bin.add_generated(__file__, {"mode": "image"})
+    scene.image.push(StageAsset(media_id=img_item.id, source="generated"))
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeVideoOnlyAdapter()
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
+                        lambda parent, settings, key, title, text, ok_text: True)
+    try:
+        win.movie._run_fire()
+        assert _wait_until(lambda: scene.video.active is not None, timeout=10.0)
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
     """The failure-visibility + retry-after-rejection feature: a failed
     generation (moderation rejection, API constraint, etc.) sets
