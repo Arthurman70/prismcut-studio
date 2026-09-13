@@ -2135,6 +2135,183 @@ def test_script_scene_row_survives_an_unrelated_scene_changed_while_focused(win,
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_producer_chat_sends_message_and_appends_transcript(win):
+    from prismcut.core.pipeline import MoviePipeline
+
+    pipeline = MoviePipeline(name="Producer chat test", brief="A robot learns to paint.",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    win.movie._set_pipeline(pipeline)
+    chat = win.movie.producer_chat
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system=None, temperature=0.7):
+            return "Sure, here's a thought - no changes proposed yet."
+
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        chat.input.setPlainText("What do you think of the pacing?")
+        chat._send()
+        assert _wait_until(lambda: "no changes proposed yet" in chat.transcript.toPlainText())
+        assert "What do you think of the pacing?" in chat.transcript.toPlainText()
+        assert chat._pending_proposal == ""
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_producer_chat_sends_full_message_history_on_second_turn(win):
+    from prismcut.core.pipeline import MoviePipeline
+
+    pipeline = MoviePipeline(name="Producer chat history test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    win.movie._set_pipeline(pipeline)
+    chat = win.movie.producer_chat
+    calls = []
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system=None, temperature=0.7):
+            calls.append(list(messages))
+            return f"reply {len(calls)}"
+
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        chat.input.setPlainText("first message")
+        chat._send()
+        # Wait for _sending to clear too, not just len(calls) - calls.append()
+        # happens on the WORKER thread inside FakeAdapter.chat(), while
+        # _set_sending(False) only runs once the GUI thread processes the
+        # queued done() signal - waiting on calls alone risks the second
+        # _send() below firing while _sending is still (briefly) True, which
+        # would make it a no-op via _send()'s own "already sending" guard.
+        assert _wait_until(lambda: len(calls) == 1 and not chat._sending)
+        assert len(calls[0]) == 1   # just the first user message
+
+        chat.input.setPlainText("second message")
+        chat._send()
+        assert _wait_until(lambda: len(calls) == 2 and not chat._sending)
+        # second call carries the full history: first user msg, first assistant
+        # reply, and the new second user msg
+        assert [m.role for m in calls[1]] == ["user", "assistant", "user"]
+        assert calls[1][0].text == "first message"
+        assert calls[1][1].text == "reply 1"
+        assert calls[1][2].text == "second message"
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_producer_chat_shows_and_applies_a_proposed_brief(win):
+    from prismcut.core.pipeline import MoviePipeline
+
+    pipeline = MoviePipeline(name="Producer chat proposal test", brief="original brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    win.movie._set_pipeline(pipeline)
+    chat = win.movie.producer_chat
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system=None, temperature=0.7):
+            return ("Sure, here's a punchier version.\nPROPOSED BRIEF:\nA robot discovers "
+                   "music and starts a band.")
+
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        chat.input.setPlainText("make it punchier")
+        chat._send()
+        assert _wait_until(lambda: chat._pending_proposal != "")
+        assert "starts a band" in chat._pending_proposal
+        assert not chat.apply_btn.isHidden()   # isHidden(), not isVisible() - Script isn't
+                                                # necessarily the active inner tab right now
+        assert "here's a punchier version" in chat.transcript.toPlainText()
+        assert "PROPOSED BRIEF" not in chat.transcript.toPlainText()   # the marker itself is stripped
+
+        chat._apply_proposal()
+        assert pipeline.brief == "A robot discovers music and starts a band."
+        assert chat.apply_btn.isHidden()
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_producer_chat_never_triggers_generation_even_when_the_reply_mentions_it(win, monkeypatch):
+    """The hard constraint: the copilot can only propose brief edits, never
+    itself fire generation - even if a (malicious or confused) AI reply
+    talks about firing/generating, nothing in this path may call any of the
+    three real generation-triggering methods."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Producer chat safety test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    chat = win.movie.producer_chat
+
+    calls = []
+    monkeypatch.setattr(win.movie.run, "run_image_batch", lambda *a, **k: calls.append("image"))
+    monkeypatch.setattr(win.movie.run, "run_video_batch", lambda *a, **k: calls.append("video"))
+    monkeypatch.setattr(win.movie, "_run_fire", lambda *a, **k: calls.append("fire"))
+
+    class FakeAdapter:
+        def chat(self, model_id, messages, system=None, temperature=0.7):
+            return ("I'll fire the pipeline and generate everything now!\n"
+                   "PROPOSED BRIEF:\nAn updated brief.")
+
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        chat.input.setPlainText("go ahead")
+        chat._send()
+        assert _wait_until(lambda: chat._pending_proposal != "")
+        chat._apply_proposal()   # even applying the proposal must not trigger anything
+        assert calls == []
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_producer_chat_resets_when_a_different_pipeline_is_loaded(win):
+    """Switching movies must not carry an unrelated chat history/context (or
+    a pending proposal meant for the OLD movie's brief) into the newly
+    loaded one."""
+    from prismcut.core.pipeline import MoviePipeline
+    from prismcut.providers.base import ChatMessage
+
+    pipeline_a = MoviePipeline(name="Movie A", brief="brief A",
+                               script_model="google::gemini-3.6-flash",
+                               image_model="google::gemini-3.1-flash-image",
+                               video_model="xai::grok-imagine-video-1.5")
+    win.movie._set_pipeline(pipeline_a)
+    chat = win.movie.producer_chat
+    chat._messages.append(ChatMessage("user", "leftover from movie A"))
+    chat.transcript.append("<b>You:</b> leftover from movie A")
+    chat._pending_proposal = "a stale proposal for movie A"
+    chat.proposal_label.setVisible(True)
+    chat.apply_btn.setVisible(True)
+
+    pipeline_b = MoviePipeline(name="Movie B", brief="brief B",
+                               script_model="google::gemini-3.6-flash",
+                               image_model="google::gemini-3.1-flash-image",
+                               video_model="xai::grok-imagine-video-1.5")
+    try:
+        win.movie._set_pipeline(pipeline_b)
+        assert chat._messages == []
+        assert chat._pending_proposal == ""
+        assert "leftover from movie A" not in chat.transcript.toPlainText()
+        assert chat.apply_btn.isHidden()
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_scene_row_take_filmstrips_hidden_with_zero_or_one_take(win):
     from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
 

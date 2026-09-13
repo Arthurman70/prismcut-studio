@@ -15,13 +15,14 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                QInputDialog, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
-                               QTabWidget, QVBoxLayout, QWidget)
+                               QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
 from ...core import paths
 from ...core.pipeline import MoviePipeline, Scene
 from ...core.pipeline_orchestrator import PipelineRun
+from ...providers.base import ChatMessage
 from ..dialogs.new_pipeline_dialog import NewPipelineDialog
 from ..widgets.common import (STATUS_ICONS, CollapsibleSection, DropAcceptor, ModelCombo,
                               TakeFilmstrip, accent_button, confirm_destructive, label,
@@ -408,6 +409,174 @@ class AspectRatioPickDialog(QDialog):
         return checked.text() if checked else None
 
 
+class ProducerChatPanel(QWidget):
+    """A conversational, multi-turn copilot for refining a movie's brief -
+    Script tab. Deliberately built on this module's own existing
+    jobs.submit() one-shot pattern (already used twice here: script
+    breakdown, "Enhance brief (AI)") rather than ChatPanel's ChatWorker/
+    QThread token-streaming mechanism, to avoid introducing a second,
+    competing async pattern into an already-large change - busy state is
+    "disable Send, show a status line," the same as "Enhance brief (AI)"
+    already does, not a live streaming cursor.
+
+    Scoped to proposing a revised BRIEF only (not structured per-scene
+    edits - identifying which scenes and what changes from free-form text
+    would need a much larger parsing scheme, a separable feature). HARD
+    CONSTRAINT: this can only PROPOSE a rewritten brief for the user to
+    review and explicitly Apply - it must never itself call
+    run_image_batch/run_video_batch/_run_fire, matching this codebase's
+    own repeated "deterministic, never agentic, for anything spending the
+    user's API credits" principle (pipeline_orchestrator.py's own module
+    docstring). A chat surface must not become a backdoor around that."""
+
+    SUGGESTIONS = ("Make it more cinematic", "Add a twist ending",
+                   "Shorten it", "Make the tone funnier")
+    _PROPOSAL_MARKER = "PROPOSED BRIEF:"
+
+    def __init__(self, panel: "MoviePipelinePanel", parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self._messages: list[ChatMessage] = []
+        self._sending = False
+        self._pending_proposal = ""
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(4)
+
+        outer.addWidget(label("🎬 Producer — chat to refine the brief", dim=True))
+
+        self.transcript = QTextBrowser()
+        self.transcript.setMinimumHeight(90)
+        self.transcript.setMaximumHeight(160)
+        outer.addWidget(self.transcript)
+
+        chips_row = QHBoxLayout()
+        for text in self.SUGGESTIONS:
+            btn = QPushButton(text)
+            btn.setStyleSheet("text-align:left;padding:4px 8px;")
+            btn.clicked.connect(lambda _checked=False, t=text: self._use_suggestion(t))
+            chips_row.addWidget(btn)
+        outer.addLayout(chips_row)
+
+        input_row = QHBoxLayout()
+        self.input = QPlainTextEdit()
+        self.input.setPlaceholderText("Ask the Producer to revise the brief…")
+        self.input.setMaximumHeight(56)
+        input_row.addWidget(self.input, 1)
+        self.send_btn = QPushButton("Send ➤")
+        self.send_btn.clicked.connect(self._send)
+        input_row.addWidget(self.send_btn)
+        outer.addLayout(input_row)
+
+        self.proposal_label = label("", dim=True)
+        self.proposal_label.setWordWrap(True)
+        self.proposal_label.setVisible(False)
+        outer.addWidget(self.proposal_label)
+        self.apply_btn = QPushButton("✓ Apply to brief")
+        self.apply_btn.setVisible(False)
+        self.apply_btn.clicked.connect(self._apply_proposal)
+        outer.addWidget(self.apply_btn)
+
+    def reset(self) -> None:
+        """Clears all conversation state - called whenever a different
+        pipeline gets loaded (MoviePipelinePanel._set_pipeline), so
+        switching movies doesn't carry an unrelated chat history/context
+        (or a pending proposal meant for the OLD movie's brief) into the
+        newly-loaded one."""
+        self._messages = []
+        self._pending_proposal = ""
+        self.transcript.clear()
+        self.proposal_label.setVisible(False)
+        self.apply_btn.setVisible(False)
+        self.input.clear()
+
+    def _use_suggestion(self, text: str) -> None:
+        self.input.setPlainText(text)
+        self._send()
+
+    def _send(self) -> None:
+        if self._sending:
+            return
+        text = self.input.toPlainText().strip()
+        run = self.panel.run
+        if not text or not run:
+            return
+        model = self.panel.registry.by_key(run.pipeline.script_model)
+        if not model:
+            self._append_transcript("Producer", "No script model is configured for this movie.")
+            return
+        self._messages.append(ChatMessage("user", text))
+        self._append_transcript("You", text)
+        self.input.clear()
+        self._set_sending(True)
+
+        adapter = self.panel.win.get_adapter(model.provider)
+        sys_prompt = (
+            "You are a movie producer helping refine a brief for an AI video-generation "
+            "pipeline. The CURRENT brief is:\n\n" + (run.pipeline.brief or "(empty)") +
+            "\n\nDiscuss the requested change conversationally. If you want to propose a "
+            f"concrete revised brief, end your reply with a line reading exactly "
+            f"'{self._PROPOSAL_MARKER}' followed by the full rewritten brief text on the "
+            "lines after it - keep every plot beat the user didn't ask to change. If you're "
+            "just answering a question or need clarification, don't include that line at "
+            "all.")
+        history = list(self._messages)
+
+        def work(job):
+            job.progress(-1, "Producer is thinking…")
+            return adapter.chat(model.id, history, system=sys_prompt, temperature=0.6)
+
+        def done(result):
+            self._set_sending(False)
+            text_out = str(result)
+            reply, proposal = self._split_proposal(text_out)
+            self._messages.append(ChatMessage("assistant", text_out))
+            self._append_transcript("Producer", reply or "(no reply text)")
+            if proposal:
+                self._show_proposal(proposal)
+
+        def fail(msg):
+            self._set_sending(False)
+            self._append_transcript("Producer", f"(failed: {msg})")
+
+        self.panel.win.jobs.submit("Producer chat", work, kind="chat", on_done=done, on_fail=fail)
+
+    @classmethod
+    def _split_proposal(cls, text: str) -> tuple:
+        idx = text.find(cls._PROPOSAL_MARKER)
+        if idx == -1:
+            return text.strip(), ""
+        return text[:idx].strip(), text[idx + len(cls._PROPOSAL_MARKER):].strip()
+
+    def _show_proposal(self, proposal: str) -> None:
+        self._pending_proposal = proposal
+        self.proposal_label.setText(f"Proposed brief:\n{proposal}")
+        self.proposal_label.setVisible(True)
+        self.apply_btn.setVisible(True)
+
+    def _apply_proposal(self) -> None:
+        run = self.panel.run
+        if not self._pending_proposal or not run:
+            return
+        run.pipeline.brief = self._pending_proposal
+        run.pipeline.save()
+        self.proposal_label.setVisible(False)
+        self.apply_btn.setVisible(False)
+        self._pending_proposal = ""
+        self.panel.win.toast("Applied the Producer's revised brief.", "success")
+        self.panel._sync_buttons()
+
+    def _append_transcript(self, who: str, text: str) -> None:
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self.transcript.append(f"<b>{who}:</b> {safe}")
+
+    def _set_sending(self, sending: bool) -> None:
+        self._sending = sending
+        self.send_btn.setEnabled(not sending)
+        self.send_btn.setText("Sending…" if sending else "Send ➤")
+
+
 class MoviePipelinePanel(QWidget):
     status = Signal(str)
     jobsRequested = Signal()
@@ -501,6 +670,9 @@ class MoviePipelinePanel(QWidget):
         self.retry_script_btn.clicked.connect(self._retry_script)
         self.retry_script_btn.setVisible(False)
         v.addWidget(self.retry_script_btn)
+
+        self.producer_chat = ProducerChatPanel(self)
+        v.addWidget(self.producer_chat)
 
         self.script_list_host = QWidget()
         self.script_list_lay = QVBoxLayout(self.script_list_host)
@@ -683,6 +855,7 @@ class MoviePipelinePanel(QWidget):
         self.run.logMessage.connect(self._on_log)
         self.run.statusChanged.connect(self._on_status)
         self.run.sceneChanged.connect(self._on_scene_list_maybe_changed)
+        self.producer_chat.reset()
         self._rebuild_scene_rows()
         self._sync_buttons()
 
