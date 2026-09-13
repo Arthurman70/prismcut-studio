@@ -5,7 +5,8 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-                               QPushButton, QSlider, QSpinBox, QToolButton, QVBoxLayout, QWidget)
+                               QPlainTextEdit, QPushButton, QSlider, QSpinBox, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
@@ -182,6 +183,19 @@ def browse_row(line_edit: QLineEdit, button: QPushButton) -> QWidget:
     lay.addWidget(line_edit, 1)
     lay.addWidget(button)
     return w
+
+
+def sync_text_edit(edit: QPlainTextEdit, value: str) -> None:
+    """Refreshes a QPlainTextEdit from a model value without clobbering an
+    in-progress, focused edit - a background event (another field of the
+    same scene finishing generation, a sibling widget bound to the same
+    data resyncing) firing while the user is mid-keystroke here must not
+    overwrite what they're typing. Shared by any two-or-more widgets bound
+    to the same underlying text (e.g. the Movie Pipeline's SceneRow and
+    ScriptSceneRow, both refreshed by the same sceneChanged signal) so the
+    guard is written once, not re-hand-rolled per call site."""
+    if not edit.hasFocus() and edit.toPlainText() != value:
+        edit.setPlainText(value)
 
 
 # ---------------------------------------------------------------- toasts

@@ -2003,6 +2003,100 @@ def test_scene_row_details_panel_prefills_and_saves_script_and_params(win):
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_sync_text_edit_does_not_clobber_a_focused_field_but_updates_an_unfocused_one():
+    # A plain duck-typed stand-in, not a real QWidget - this suite has no
+    # existing precedent for real OS-level setFocus()/hasFocus() on a bare
+    # top-level widget, and it isn't needed here: sync_text_edit only ever
+    # calls .hasFocus()/.toPlainText()/.setPlainText(), so a fake with those
+    # three methods tests the exact same logic without any real window/
+    # focus-system involvement.
+    from prismcut.ui.widgets.common import sync_text_edit
+
+    class FakeEdit:
+        def __init__(self, text, focused):
+            self._text = text
+            self._focused = focused
+
+        def hasFocus(self):
+            return self._focused
+
+        def toPlainText(self):
+            return self._text
+
+        def setPlainText(self, text):
+            self._text = text
+
+    focused = FakeEdit("original", focused=True)
+    sync_text_edit(focused, "a value from the model, while the user is mid-edit")
+    assert focused.toPlainText() == "original"   # untouched - the user owns this field right now
+
+    unfocused = FakeEdit("stale", focused=False)
+    sync_text_edit(unfocused, "a fresh model value")
+    assert unfocused.toPlainText() == "a fresh model value"   # safe to refresh
+
+
+def test_script_scene_row_prefills_and_saves_script_and_narration(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Script row test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    scene.script = "A lighthouse at dusk."
+    scene.narration = "The keeper climbs the stairs."
+    win.movie._set_pipeline(pipeline)
+    try:
+        row = win.movie._script_rows[scene.id]
+        assert row.script_edit.toPlainText() == "A lighthouse at dusk."
+        assert row.narration_edit.toPlainText() == "The keeper climbs the stairs."
+
+        row.script_edit.setPlainText("A lighthouse at dawn instead.")
+        row.narration_edit.setPlainText("She watches the sun rise.")
+        row._save()
+
+        assert scene.script == "A lighthouse at dawn instead."
+        assert scene.narration == "She watches the sun rise."
+        # the OTHER row (Scenes tab), bound to the same scene, must see the save too
+        assert win.movie._rows[scene.id].script_edit.toPlainText() == "A lighthouse at dawn instead."
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_script_scene_row_survives_an_unrelated_scene_changed_while_focused(win, monkeypatch):
+    """The concrete risk of having two widgets bound to the same scene: an
+    unrelated event (here, simulated directly via emitting sceneChanged)
+    must not clobber the user's in-progress narration edit in the Script
+    tab, even though the Scenes tab's SceneRow for the same scene is also
+    listening to that same signal. Focus is simulated via monkeypatch
+    (matching test_sync_text_edit_...'s reasoning) rather than a real OS-
+    level setFocus(), which this suite has no precedent for and which
+    caused a crash when tried against a bare top-level widget."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Script row focus test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    try:
+        row = win.movie._script_rows[scene.id]
+        monkeypatch.setattr(row.narration_edit, "hasFocus", lambda: True)
+        row.narration_edit.setPlainText("mid-keystroke, not yet saved")
+
+        # something else entirely changed for this scene (e.g. its image
+        # finished generating in the background) - scene.script itself is
+        # untouched, but sceneChanged still fires and both rows re-sync
+        win.movie.run.sceneChanged.emit(scene.id)
+
+        assert row.narration_edit.toPlainText() == "mid-keystroke, not yet saved"
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_scene_row_take_filmstrips_hidden_with_zero_or_one_take(win):
     from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
 

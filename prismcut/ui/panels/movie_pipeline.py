@@ -23,7 +23,8 @@ from ...core.pipeline import MoviePipeline, Scene
 from ...core.pipeline_orchestrator import PipelineRun
 from ..dialogs.new_pipeline_dialog import NewPipelineDialog
 from ..widgets.common import (STATUS_ICONS, CollapsibleSection, DropAcceptor, ModelCombo,
-                              TakeFilmstrip, accent_button, confirm_destructive, label)
+                              TakeFilmstrip, accent_button, confirm_destructive, label,
+                              sync_text_edit)
 from .generate_panel import ParamForm
 
 BUSY_STATUSES = ("images_running", "video_running")
@@ -217,7 +218,13 @@ class SceneRow(QWidget):
         self.scene.image_params = self.image_param_form.values()
         self.scene.video_params = self.video_param_form.values()
         self.run.pipeline.save()
-        self.sync()
+        # Emitting (rather than calling self.sync() directly) also refreshes
+        # ScriptSceneRow's view of the same scene in the Script tab - two
+        # widgets bound to the same Scene should both see either one's save,
+        # not just the one that made it. Direct/same-thread connections
+        # deliver synchronously, so this row's own sync() still happens
+        # before this method returns, same as before.
+        self.run.sceneChanged.emit(self.scene.id)
         self.run.win.toast(f"Scene {self.scene.index + 1} changes saved.", "success")
 
     def _on_scene_changed(self, scene_id: str):
@@ -271,8 +278,7 @@ class SceneRow(QWidget):
         # scene fires sceneChanged -> sync() while the user may be mid-edit
         # in script_edit (e.g. regenerating video while tweaking the next
         # scene's script). A focused field means the user owns its text.
-        if not self.script_edit.hasFocus() and self.script_edit.toPlainText() != self.scene.script:
-            self.script_edit.setPlainText(self.scene.script)
+        sync_text_edit(self.script_edit, self.scene.script)
         self._sync_take_filmstrip(self.scene.image, self.image_takes, self.image_takes_label)
         self._sync_take_filmstrip(self.scene.video, self.video_takes, self.video_takes_label)
 
@@ -293,6 +299,71 @@ class SceneRow(QWidget):
             self.run.set_scene_image_override(self.scene.id, paths_[0])
 
 
+class ScriptSceneRow(QWidget):
+    """Script tab's lightweight per-scene row: just the two fields that
+    define what a scene actually IS (on-screen action + spoken narration) -
+    no thumbnail, no generation controls, no model overrides, no take
+    history. Deliberately a SEPARATE widget from SceneRow (Scenes tab),
+    not a subset view of it - both are bound to the same Scene and both
+    listen to the same sceneChanged signal, so SceneRow's existing
+    "don't clobber a focused, mid-edit field" guard (now the shared
+    sync_text_edit helper) has to be applied here too: an unrelated event
+    (this scene's image finishing in the background, say) must not
+    overwrite a user's in-progress keystrokes in the OTHER tab."""
+
+    def __init__(self, run: PipelineRun, scene: Scene, parent=None):
+        super().__init__(parent)
+        self.run = run
+        self.scene = scene
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 3, 4, 3)
+        outer.setSpacing(2)
+
+        self.title = label(f"Scene {scene.index + 1}", dim=True)
+        outer.addWidget(self.title)
+
+        outer.addWidget(label("Script / visual prompt", dim=True))
+        self.script_edit = QPlainTextEdit(scene.script)
+        self.script_edit.setMaximumHeight(70)
+        self.script_edit.setPlaceholderText("Describe what happens in this scene…")
+        outer.addWidget(self.script_edit)
+
+        outer.addWidget(label("Narration / dialogue", dim=True))
+        self.narration_edit = QPlainTextEdit(scene.narration)
+        self.narration_edit.setMaximumHeight(50)
+        self.narration_edit.setPlaceholderText(
+            "Spoken narration for this scene - leave blank for silent…")
+        outer.addWidget(self.narration_edit)
+
+        save_btn = QPushButton("💾 Save")
+        save_btn.setToolTip("Saves this scene's script and narration - applied next time it's "
+                            "(re)generated.")
+        save_btn.clicked.connect(self._save)
+        outer.addWidget(save_btn)
+
+        run.sceneChanged.connect(self._on_scene_changed)
+        self.sync()
+
+    def _on_scene_changed(self, scene_id: str):
+        if scene_id == self.scene.id:
+            self.sync()
+
+    def _save(self):
+        self.scene.script = self.script_edit.toPlainText()
+        self.scene.narration = self.narration_edit.toPlainText()
+        self.run.pipeline.save()
+        # See SceneRow._save_details' identical comment - keeps the Scenes
+        # tab's SceneRow for this same scene in sync too.
+        self.run.sceneChanged.emit(self.scene.id)
+        self.run.win.toast(f"Scene {self.scene.index + 1} changes saved.", "success")
+
+    def sync(self):
+        self.title.setText(f"Scene {self.scene.index + 1}")
+        sync_text_edit(self.script_edit, self.scene.script)
+        sync_text_edit(self.narration_edit, self.scene.narration)
+
+
 class MoviePipelinePanel(QWidget):
     status = Signal(str)
     jobsRequested = Signal()
@@ -304,6 +375,7 @@ class MoviePipelinePanel(QWidget):
         self.settings = main_window.settings
         self.run: PipelineRun | None = None
         self._rows: dict[str, SceneRow] = {}
+        self._script_rows: dict[str, ScriptSceneRow] = {}
         self._script_running = False
 
         outer = QVBoxLayout(self)
@@ -385,7 +457,17 @@ class MoviePipelinePanel(QWidget):
         self.retry_script_btn.clicked.connect(self._retry_script)
         self.retry_script_btn.setVisible(False)
         v.addWidget(self.retry_script_btn)
-        v.addStretch(1)
+
+        self.script_list_host = QWidget()
+        self.script_list_lay = QVBoxLayout(self.script_list_host)
+        self.script_list_lay.setContentsMargins(0, 0, 0, 0)
+        self.script_list_lay.setSpacing(1)
+        self.script_list_lay.addStretch(1)
+        script_scroll = QScrollArea()
+        script_scroll.setWidget(self.script_list_host)
+        script_scroll.setWidgetResizable(True)
+        script_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        v.addWidget(script_scroll, 1)
         return host
 
     def _build_generate_tab(self) -> QWidget:
@@ -581,10 +663,19 @@ class MoviePipelinePanel(QWidget):
         self._sync_buttons()
 
     def _rebuild_scene_rows(self):
+        """Rebuilds BOTH the Scenes tab's SceneRow list and the Script tab's
+        ScriptSceneRow list together - one trigger for both, since they're
+        always driven by the exact same condition (the pipeline's own scene
+        list changed shape), rather than two independent rebuild checks that
+        could in principle disagree over what "changed" means."""
         for row in self._rows.values():
             row.setParent(None)
             row.deleteLater()
         self._rows.clear()
+        for row in self._script_rows.values():
+            row.setParent(None)
+            row.deleteLater()
+        self._script_rows.clear()
         if not self.run:
             return
         for scene in sorted(self.run.pipeline.scenes, key=lambda s: s.index):
@@ -593,6 +684,10 @@ class MoviePipelinePanel(QWidget):
             row.jumpRequested.connect(self._jump_to_scene)
             self._rows[scene.id] = row
             self.list_lay.insertWidget(self.list_lay.count() - 1, row)
+
+            script_row = ScriptSceneRow(self.run, scene)
+            self._script_rows[scene.id] = script_row
+            self.script_list_lay.insertWidget(self.script_list_lay.count() - 1, script_row)
 
     def _jump_to_scene(self, scene_id: str):
         if not self.run:
