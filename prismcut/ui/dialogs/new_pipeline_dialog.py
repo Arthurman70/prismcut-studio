@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                                QMessageBox, QPlainTextEdit, QPushButton)
 
@@ -83,6 +83,26 @@ class NewPipelineDialog(QDialog):
             "generated - takes that video's own picture and hard-syncs the mouth to the "
             "scene's narration audio. Leave as None to skip it.")
         form.addRow("Lip-sync model", self.lipsync_combo)
+
+        # Opt-in, not on by default: a real (if cheap) automatic per-scene
+        # API call this codebase would otherwise gate carefully - must not
+        # silently fire just because a caption-capable key happens to be
+        # configured. Real transcribe_segments support exists only for
+        # openai::whisper-1 as of this writing (every other provider raises
+        # NotSupported) - disabled with an explanatory tooltip rather than
+        # hidden outright if no such model is configured, so the checkbox
+        # itself still documents the feature exists.
+        self.auto_captions_check = QCheckBox("🔤 Auto-generate captions && lyric guidance")
+        has_caption_model = bool(registry.models_with("transcribe_segments"))
+        self.auto_captions_check.setEnabled(has_caption_model)
+        self.auto_captions_check.setToolTip(
+            "Transcribes each scene's narration once generated, feeding it back as timing/"
+            "lyric guidance for that scene's video prompt and optionally burning captions "
+            "onto the final export (toggle in the Assemble tab). Needs a transcription-"
+            "capable model - currently only OpenAI's Whisper." if has_caption_model else
+            "Needs a transcription-capable model with a configured API key (currently only "
+            "OpenAI's Whisper) - add one under AI ▸ API Keys… to enable this.")
+        form.addRow("", self.auto_captions_check)
 
         # Reference "cast" - uploaded once for the whole movie, merged into
         # every scene's own image-generation references alongside the
@@ -342,7 +362,8 @@ class NewPipelineDialog(QDialog):
             # before) - new movies opt into a faster default explicitly
             # here instead, since a noticeably quicker feel by default is
             # the whole point of offering this knob.
-            video_concurrency=3)
+            video_concurrency=3,
+            auto_captions=self.auto_captions_check.isChecked())
         if self._imported_scenes:
             self.pipeline.scenes = self._imported_scenes
             _seed_scene_durations(self.pipeline.scenes, self.pipeline.default_scene_duration, video)

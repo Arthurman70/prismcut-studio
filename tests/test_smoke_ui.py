@@ -612,6 +612,27 @@ def test_new_pipeline_dialog_accept_does_not_require_a_voice_model(win):
     dlg.close()
 
 
+def test_new_pipeline_dialog_auto_captions_checkbox_flows_into_pipeline(win):
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        # whisper-1 is a real, always-present registry entry (transcribe_
+        # segments capability exists regardless of whether a key is
+        # configured - same "prefer a configured key, don't require one
+        # outright" precedent main_window.py's own _generate_captions uses)
+        assert dlg.auto_captions_check.isEnabled()
+        assert not dlg.auto_captions_check.isChecked()   # opt-in, off by default
+
+        dlg.brief_edit.setPlainText("A movie with captions.")
+        dlg.auto_captions_check.setChecked(True)
+        dlg._accept()
+
+        assert dlg.pipeline.auto_captions is True
+    finally:
+        dlg.close()
+
+
 def test_new_pipeline_dialog_shows_cost_estimate_as_models_are_picked(win):
     """The cost-estimation feature: a running 'estimated cost for N scenes'
     preview that updates as image/video/voice models change, and as the
@@ -1646,6 +1667,103 @@ def test_scene_audio_generation_uses_the_configured_voice(win):
         win.movie.run.run_audio_batch()
         assert _wait_until(lambda: len(captured) == 1)
         assert captured[0] == "Wise_Woman"   # the model's registry-configured default voice
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_auto_captions_transcribes_narration_when_enabled(win):
+    from prismcut.core.captions import Segment
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    class FakeAdapter:
+        def tts(self, model_id, text, voice, params):
+            return __file__
+
+        def transcribe_segments(self, model_id, path):
+            return [Segment(0.0, 1.0, "Hello"), Segment(1.0, 2.0, "world")]
+
+    pipeline = MoviePipeline(name="Auto captions test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             audio_model="minimax::speech-02-hd", auto_captions=True)
+    scene = new_scene(0)
+    scene.narration = "Hello world."
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.movie.run.run_audio_batch()
+        assert _wait_until(lambda: len(scene.caption_segments) == 2, timeout=10.0)
+        assert scene.caption_segments[0].text == "Hello"
+        assert scene.audio.active is not None   # the audio stage itself still completed normally
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_auto_captions_off_skips_transcription_entirely(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    class FakeAdapter:
+        def tts(self, model_id, text, voice, params):
+            return __file__
+
+        def transcribe_segments(self, model_id, path):
+            raise AssertionError("auto_captions is off - transcription must not be called")
+
+    pipeline = MoviePipeline(name="Auto captions off test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             audio_model="minimax::speech-02-hd", auto_captions=False)
+    scene = new_scene(0)
+    scene.narration = "Hello world."
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.movie.run.run_audio_batch()
+        assert _wait_until(lambda: scene.audio.active is not None, timeout=10.0)
+        assert scene.caption_segments == []
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_movie_pipeline_auto_captions_transcription_failure_fails_soft(win):
+    """A caption-transcription failure must not fail the AUDIO stage itself
+    - the scene's real narration audio is already safely saved by the time
+    transcription even starts, exactly like a failed lip-sync pass still
+    keeps the plain video rather than losing the scene."""
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    class FakeAdapter:
+        def tts(self, model_id, text, voice, params):
+            return __file__
+
+        def transcribe_segments(self, model_id, path):
+            raise RuntimeError("network timeout")
+
+    pipeline = MoviePipeline(name="Auto captions failure test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             audio_model="minimax::speech-02-hd", auto_captions=True)
+    scene = new_scene(0)
+    scene.narration = "Hello world."
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.movie.run.run_audio_batch()
+        assert _wait_until(lambda: scene.audio.active is not None, timeout=10.0)
+        assert scene.caption_segments == []
+        assert scene.last_error == ""   # a caption failure is not counted as an audio failure
     finally:
         win.get_adapter = saved_get_adapter
         win.movie._set_pipeline(MoviePipeline(name="empty"))
@@ -2732,6 +2850,77 @@ def test_video_batch_concurrency_1_still_generates_strictly_sequentially(win):
         assert calls == [0, 1, 2]   # each call sees one more finished scene than the last
     finally:
         win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_video_generation_prompt_includes_lyric_guidance_when_captions_exist(win):
+    from prismcut.core.captions import Segment
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    captured = {}
+
+    class FakeVideoAdapter:
+        def generate_video(self, model_id, prompt, params, **kwargs):
+            captured["prompt"] = prompt
+            return __file__
+
+    pipeline = MoviePipeline(name="Lyric guidance test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    scene = new_scene(0)
+    scene.script = "A robot sings in the rain."
+    scene.caption_segments = [Segment(0.0, 2.0, "Singing in the rain")]
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    run._ensure_tracks()
+    saved_get_adapter = win.get_adapter
+    win.get_adapter = lambda provider: FakeVideoAdapter()
+    try:
+        run.run_video_batch()
+        assert _wait_until(lambda: "prompt" in captured, timeout=10.0)
+        assert captured["prompt"].startswith("A robot sings in the rain.")
+        assert "Singing in the rain" in captured["prompt"]
+        assert "0.0-2.0s" in captured["prompt"]
+    finally:
+        win.get_adapter = saved_get_adapter
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_burn_in_captions_toggle_retroactively_syncs_already_generated_scenes(win):
+    """The concrete reason sync_caption_burn_in exists: a common real order
+    is generate everything first, then decide about captions right before
+    export - toggling the Assemble-tab checkbox after a scene's video
+    already finished must still take effect on that scene, not just ones
+    generated after the flip."""
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+    from prismcut.core.captions import Segment
+
+    pipeline = MoviePipeline(name="Burn-in retroactive test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5",
+                             burn_in_captions=False)
+    scene = new_scene(0)
+    scene.caption_segments = [Segment(0.0, 1.0, "Hello")]
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    run = win.movie.run
+    try:
+        run._ensure_tracks()
+        vid_item = win.bin.add_generated(__file__, {"mode": "video"})   # no caption_segments in meta yet
+        scene.video.push(StageAsset(media_id=vid_item.id, source="generated"))
+        assert "caption_segments" not in vid_item.meta
+
+        win.movie.burn_in_captions_check.setChecked(True)   # user flips it AFTER the video finished
+
+        assert vid_item.meta["caption_segments"] == [{"start": 0.0, "end": 1.0, "text": "Hello"}]
+        assert pipeline.burn_in_captions is True
+
+        win.movie.burn_in_captions_check.setChecked(False)
+        assert "caption_segments" not in vid_item.meta
+    finally:
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 

@@ -110,3 +110,36 @@ def test_moviepipeline_scene_count_hint_defaults_to_zero_and_round_trips(tmp_pat
     p2.save(out)
     loaded = MoviePipeline.load(out)
     assert loaded.scene_count_hint == 12
+
+
+def test_moviepipeline_auto_captions_and_burn_in_default_off_and_round_trip(tmp_path):
+    p = MoviePipeline()
+    assert p.auto_captions is False
+    assert p.burn_in_captions is False
+
+    p2 = MoviePipeline(name="Captions test", auto_captions=True, burn_in_captions=True)
+    out = tmp_path / "pipeline.json"
+    p2.save(out)
+    loaded = MoviePipeline.load(out)
+    assert loaded.auto_captions is True
+    assert loaded.burn_in_captions is True
+
+
+def test_scene_caption_segments_defaults_empty_and_round_trips_as_real_segments(tmp_path):
+    from prismcut.core.captions import Segment
+
+    scene = new_scene(0)
+    assert scene.caption_segments == []
+
+    scene.caption_segments = [Segment(0.0, 1.5, "Hello there"), Segment(1.5, 3.0, "General Kenobi")]
+    p = MoviePipeline(name="Caption segments test")
+    p.scenes.append(scene)
+    out = tmp_path / "pipeline.json"
+    p.save(out)
+    loaded = MoviePipeline.load(out)
+
+    restored = loaded.scenes[0].caption_segments
+    assert len(restored) == 2
+    assert all(isinstance(s, Segment) for s in restored)   # not left as plain dicts
+    assert restored[0].text == "Hello there"
+    assert restored[1].end == 3.0

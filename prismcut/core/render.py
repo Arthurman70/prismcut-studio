@@ -170,6 +170,41 @@ def _title_drawtext(m, w: int, h: int) -> str:
     return ":".join(parts)
 
 
+def _caption_drawtext_filters(m) -> list:
+    """One `drawtext=...:enable='between(t,start,end)'` filter per caption
+    segment - segments are plain {start,end,text} dicts stashed in
+    MediaItem.meta (core.pipeline.Scene.caption_segments,
+    core/render.py has no coupling to core.pipeline itself and shouldn't
+    gain any just for this). enable= is what lets each segment's text
+    appear only for its own time window rather than the whole clip - the
+    same idiom (and exact `between(t,{_esc(...)},{_esc(...)})` spelling,
+    a plain comma - the surrounding single-quotes already protect it from
+    this chain's own comma-separated filter splitting, so it does NOT need
+    backslash-escaping) build_command() already uses to time-window every
+    clip's own overlay() onto the shared canvas. Segment start/end are
+    naturally 0-based/local to the scene's own narration file, which
+    matches this filter's position in the chain exactly: everything before
+    the chain's own final setpts-based local-to-absolute re-basing (below)
+    sees local time, so no conversion is needed - as long as the clip's
+    own in_point is 0 (true for a freshly-placed pipeline scene clip; a
+    user later trimming/razoring it on the timeline could drift this - a
+    narrow, low-severity edge case, not a blocker)."""
+    meta = getattr(m, "meta", None) or {}
+    segments = meta.get("caption_segments") or []
+    filters = []
+    for seg in segments:
+        raw_text = str(seg.get("text", "")).strip()   # matches core.captions.format_srt's own
+        if not raw_text:                              # "strip, then skip if empty" precedent
+            continue
+        text = _drawtext_escape(raw_text)
+        start, end = float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
+        filters.append(
+            f"drawtext=fontfile='C\\:/Windows/Fonts/arialbd.ttf':text='{text}':fontsize=42:"
+            f"fontcolor=0xffffff:box=1:boxcolor=0x000000@0.55:boxborderw=8:"
+            f"x=(w-text_w)/2:y=h-text_h-h*0.06:enable='between(t,{_esc(start)},{_esc(end)})'")
+    return filters
+
+
 def _clip_video_filters(c: Clip, w: int, h: int, m=None, shift: Optional[float] = None) -> str:
     fx = c.effects or {}
     chain = []
@@ -209,6 +244,10 @@ def _clip_video_filters(c: Clip, w: int, h: int, m=None, shift: Optional[float] 
     op = fx.get("opacity")
     if op is not None and float(op) < 100:
         chain.append(f"format=rgba,colorchannelmixer=aa={float(op) / 100.0:.3f}")
+    # After color/effects grading (so burned-in text isn't itself re-graded),
+    # before the mandatory trailing format+setpts pair (so it still sees
+    # clip-local time - see _caption_drawtext_filters' own docstring).
+    chain.extend(_caption_drawtext_filters(m))
     chain.append("format=yuva420p")
     # shift defaults to the clip's own absolute timeline position; a
     # transition pair (see build_command's xfade branch) passes shift=0.0

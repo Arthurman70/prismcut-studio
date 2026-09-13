@@ -1,9 +1,9 @@
 import pytest
 
-from prismcut.core.pipeline_orchestrator import (_BatchTracker, _augment_prompt_for_model,
-                                                 _dispatch_window, _is_moderation_failure,
-                                                 _parse_breakdown, _seed_scene_durations,
-                                                 resolve_video_plan)
+from prismcut.core.pipeline_orchestrator import (_BatchTracker, _append_lyric_guidance,
+                                                 _augment_prompt_for_model, _dispatch_window,
+                                                 _is_moderation_failure, _parse_breakdown,
+                                                 _seed_scene_durations, resolve_video_plan)
 
 
 class _FakeModel:
@@ -397,3 +397,30 @@ def test_augment_prompt_for_model_tolerates_a_model_with_no_such_attribute():
         pass
 
     assert _augment_prompt_for_model("A scene", BareModel()) == "A scene"
+
+
+# ---------------------------------------------------------- _append_lyric_guidance
+
+def test_append_lyric_guidance_is_a_noop_without_caption_segments():
+    from prismcut.core.pipeline import new_scene
+
+    scene = new_scene(0)
+    assert scene.caption_segments == []
+    assert _append_lyric_guidance("A robot walks through rain.", scene) == \
+        "A robot walks through rain."
+
+
+def test_append_lyric_guidance_appends_timed_text_when_segments_exist():
+    from prismcut.core.captions import Segment
+    from prismcut.core.pipeline import new_scene
+
+    scene = new_scene(0)
+    scene.caption_segments = [Segment(0.0, 1.5, "Hello there"),
+                              Segment(1.5, 3.2, "General Kenobi")]
+    result = _append_lyric_guidance("A robot walks through rain.", scene)
+
+    assert result.startswith("A robot walks through rain.")
+    assert "0.0-1.5s" in result
+    assert "Hello there" in result
+    assert "1.5-3.2s" in result
+    assert "General Kenobi" in result

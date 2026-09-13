@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
-                               QInputDialog, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
-                               QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QHBoxLayout, QInputDialog, QLabel, QPlainTextEdit, QPushButton,
+                               QScrollArea, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
@@ -871,6 +871,19 @@ class MoviePipelinePanel(QWidget):
         self.assemble_status = label("No movie loaded yet.", dim=True)
         self.assemble_status.setWordWrap(True)
         v.addWidget(self.assemble_status)
+
+        self.burn_in_captions_check = QCheckBox("🔤 Burn captions into the final export")
+        self.burn_in_captions_check.setToolTip(
+            "Renders each scene's transcribed narration as on-screen text in the final "
+            "export. Independent of the auto-captions setting chosen when this movie was "
+            "created - that controls whether the transcript DATA exists at all (feeding "
+            "video-prompt guidance either way); this only controls whether it's also drawn "
+            "onto the video. Off by default - existing caption data shouldn't silently "
+            "change what an export looks like unless you ask for it. No effect on scenes "
+            "with no transcript.")
+        self.burn_in_captions_check.toggled.connect(self._burn_in_captions_toggled)
+        v.addWidget(self.burn_in_captions_check)
+
         export_btn = accent_button("📤 Export…")
         export_btn.setToolTip("Opens the app's Export dialog to render your project - the "
                               "same Export any other timeline content uses.")
@@ -1104,8 +1117,18 @@ class MoviePipelinePanel(QWidget):
             self.script_status.setText("")
         self._sync_assemble_status(p, total, images_remaining, video_remaining)
 
+    def _burn_in_captions_toggled(self, checked: bool) -> None:
+        if self.run:
+            self.run.pipeline.burn_in_captions = checked
+            self.run.sync_caption_burn_in()
+            self.run.pipeline.save()
+
     def _sync_assemble_status(self, p: MoviePipeline | None, total: int,
                               images_remaining: int, video_remaining: int) -> None:
+        if p:
+            self.burn_in_captions_check.blockSignals(True)
+            self.burn_in_captions_check.setChecked(p.burn_in_captions)
+            self.burn_in_captions_check.blockSignals(False)
         if not p:
             self.assemble_status.setText("No movie loaded yet.")
             return

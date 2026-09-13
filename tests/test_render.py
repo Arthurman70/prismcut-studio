@@ -351,6 +351,88 @@ def test_drawtext_escape_handles_colons_quotes_backslashes_and_newlines():
     assert _drawtext_escape("line one\nline two") == "line one line two"
 
 
+def test_caption_drawtext_filters_empty_without_segments():
+    from prismcut.core.render import _caption_drawtext_filters
+
+    class FakeMedia:
+        meta = {}
+
+    assert _caption_drawtext_filters(FakeMedia()) == []
+    assert _caption_drawtext_filters(None) == []   # some clips have no resolvable media at all
+
+
+def test_caption_drawtext_filters_builds_one_filter_per_segment_with_enable_window():
+    from prismcut.core.render import _caption_drawtext_filters
+
+    class FakeMedia:
+        meta = {"caption_segments": [
+            {"start": 0.0, "end": 1.5, "text": "Hello there"},
+            {"start": 1.5, "end": 3.25, "text": "General Kenobi"},
+        ]}
+
+    filters = _caption_drawtext_filters(FakeMedia())
+    assert len(filters) == 2
+    assert "drawtext=" in filters[0]
+    assert "text='Hello there'" in filters[0]
+    assert "enable='between(t,0,1.5)'" in filters[0]
+    assert "text='General Kenobi'" in filters[1]
+    assert "enable='between(t,1.5,3.25)'" in filters[1]
+
+
+def test_caption_drawtext_filters_skips_a_blank_segment():
+    from prismcut.core.render import _caption_drawtext_filters
+
+    class FakeMedia:
+        meta = {"caption_segments": [{"start": 0.0, "end": 1.0, "text": "   "}]}
+
+    assert _caption_drawtext_filters(FakeMedia()) == []
+
+
+def test_clip_video_filters_places_captions_before_the_final_setpts_rebasing(tmp_path):
+    """Load-bearing ordering: everything before the chain's own final
+    setpts-based local-to-absolute re-basing sees clip-LOCAL time, matching
+    caption Segment.start/end's natural 0-based values with no conversion -
+    if a future edit ever moved captions after that setpts call, timing
+    would silently break for any clip not starting at t=0."""
+    from prismcut.core.render import _clip_video_filters
+    from prismcut.core.project import Clip
+
+    class FakeMedia:
+        meta = {"caption_segments": [{"start": 0.0, "end": 1.0, "text": "Hi"}]}
+
+    c = Clip(id="c1", media_id="m1", track_id="t1", start=5.0, duration=2.0)
+    chain = _clip_video_filters(c, 1280, 720, FakeMedia())
+    parts = chain.split(",")
+    drawtext_idx = next(i for i, p in enumerate(parts) if p.startswith("drawtext="))
+    setpts_idx = next(i for i, p in enumerate(parts) if p.startswith("setpts=PTS-STARTPTS"))
+    assert drawtext_idx < setpts_idx
+
+
+def test_build_command_burns_in_captions_when_present_in_meta(tmp_path):
+    p = make_project(tmp_path)
+    v1 = p.video_tracks()[-1]
+    img_item = next(iter(p.media.values()))
+    img_item.meta["caption_segments"] = [{"start": 0.0, "end": 2.0, "text": "Subtitle line"}]
+    opts = RenderOptions(width=1280, height=720, fps=30, fmt="mp4",
+                         out_path=str(tmp_path / "out.mp4"))
+
+    joined = " ".join(build_command(p, opts))
+
+    assert "drawtext=" in joined
+    assert "text='Subtitle line'" in joined
+    assert "enable='between(t,0,2)'" in joined
+
+
+def test_build_command_has_no_caption_drawtext_without_segments(tmp_path):
+    p = make_project(tmp_path)
+    opts = RenderOptions(width=1280, height=720, fps=30, fmt="mp4",
+                         out_path=str(tmp_path / "out.mp4"))
+
+    joined = " ".join(build_command(p, opts))
+
+    assert "drawtext=" not in joined   # no title, no captions - nothing to draw
+
+
 def test_title_clip_uses_lavfi_color_source_not_a_file(tmp_path):
     p = Project()
     item = p.add_title("Hello", duration=4.0)

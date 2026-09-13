@@ -75,6 +75,31 @@ def _is_moderation_failure(msg) -> bool:
     return any(hint in low for hint in _MODERATION_HINTS)
 
 
+def _segments_to_dicts(segments: list) -> list:
+    """Plain {start,end,text} dicts for stashing into a MediaItem.meta -
+    mirrors exactly how title styling already lives as plain values there
+    (core/render.py has no coupling to core.pipeline/Segment and shouldn't
+    gain any just for this)."""
+    return [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
+
+
+def _append_lyric_guidance(prompt: str, scene: Scene) -> str:
+    """Appends read-only timing/lyric guidance transcribed from a scene's
+    own narration audio (Scene.caption_segments, only ever populated when
+    MoviePipeline.auto_captions is on) to a video-generation prompt - a
+    plain string append, not a judgment call by this module, consistent
+    with pipeline_orchestrator staying a fixed sequence rather than
+    deciding anything itself (same reasoning as _augment_prompt_for_model
+    below). No-op when there's nothing to add, so every caller can call
+    this unconditionally rather than checking auto_captions itself."""
+    if not scene.caption_segments:
+        return prompt
+    lines = "; ".join(f'{seg.start:.1f}-{seg.end:.1f}s: "{seg.text}"'
+                      for seg in scene.caption_segments)
+    return (f"{prompt.rstrip()}\n\nTiming/lyric guidance transcribed from the actual narration "
+           f"audio - match on-screen action and mouth movement to these beats: {lines}")
+
+
 def _augment_prompt_for_model(base: str, model) -> str:
     """Deterministic, zero-extra-API-call prompt-safety hint for models
     whose provider enforces stricter copyright/IP moderation than the rest
@@ -190,6 +215,27 @@ class PipelineRun(QObject):
         if not scene:
             return None
         return scene.clip_ids.get("video") or scene.clip_ids.get("image")
+
+    def sync_caption_burn_in(self) -> None:
+        """Retroactively pushes the CURRENT MoviePipeline.burn_in_captions
+        decision onto every already-generated scene's video MediaItem.meta.
+        Without this, toggling the setting after some scenes' video already
+        finished - a common real order: generate everything, then decide
+        about captions right before export - would only ever affect scenes
+        generated AFTER the toggle flip, not the ones already sitting there.
+        core.render has no concept of "the pipeline's current toggle
+        state" (no coupling to core.pipeline at all) - it only ever reads
+        whatever's already in a clip's own MediaItem.meta, so keeping that
+        in sync here is the one place this decision needs to be applied."""
+        for scene in self.pipeline.scenes:
+            vid = scene.video.active
+            item = self.win.project.media.get(vid.media_id) if vid else None
+            if not item:
+                continue
+            if self.pipeline.burn_in_captions and scene.caption_segments:
+                item.meta["caption_segments"] = _segments_to_dicts(scene.caption_segments)
+            else:
+                item.meta.pop("caption_segments", None)
 
     # ---------------------------------------------------------- stage 1: script
     def generate_breakdown(self, on_done: Optional[Callable] = None,
@@ -540,7 +586,10 @@ class PipelineRun(QObject):
             scene.last_error = ""
             self.sceneChanged.emit(scene.id)
             self.pipeline.save()
-            tracker.one_done(True)
+            if self.pipeline.auto_captions:
+                self._chain_caption_transcription(scene, item, tracker)
+            else:
+                tracker.one_done(True)
 
         def fail(msg):
             self.logMessage.emit(f"Scene {scene.index + 1} audio failed: {msg}")
@@ -550,6 +599,49 @@ class PipelineRun(QObject):
             tracker.one_done(False, msg)
 
         self.win.jobs.submit(f"Movie scene {scene.index + 1}: audio", work, kind="tts",
+                             on_done=done, on_fail=fail)
+
+    def _chain_caption_transcription(self, scene: Scene, audio_item, tracker: _BatchTracker) -> None:
+        """Mirrors _chain_lipsync's own 'stage N's on_done submits stage
+        N+1' pattern: called from _generate_scene_audio's done() once the
+        audio itself is saved, instead of finishing the audio stage
+        immediately - only reachable when MoviePipeline.auto_captions is
+        on. Model resolution mirrors main_window.py's own
+        _generate_captions() exactly (capability-flag lookup, prefer a
+        configured key) rather than hardcoding a provider - real
+        transcribe_segments support exists only for openai::whisper-1 as
+        of this writing, but nothing here assumes that won't change. Fails
+        soft - a missing/failed transcript must not fail the audio stage
+        itself, exactly like a failed lip-sync pass still keeps the plain
+        video rather than losing the scene."""
+        models = self.win.registry.models_with("transcribe_segments")
+        model = next((m for m in models
+                     if self.win.settings.has_key(m.provider,
+                                                  (self.win.registry.provider(m.provider) or
+                                                   type("s", (), {"key_env": ""})).key_env)),
+                    models[0] if models else None)
+        if model is None:
+            tracker.one_done(True)
+            return
+        adapter = self.win.get_adapter(model.provider)
+
+        def work(job):
+            job.progress(-1, f"Scene {scene.index + 1}: transcribing for captions")
+            return adapter.transcribe_segments(model.id, audio_item.path)
+
+        def done(segments):
+            scene.caption_segments = list(segments or [])
+            self.pipeline.save()
+            self.sceneChanged.emit(scene.id)
+            tracker.one_done(True)
+
+        def fail(msg):
+            self.logMessage.emit(
+                f"Scene {scene.index + 1}: caption transcription failed: {msg} (keeping the "
+                "audio - captions/lyric guidance just won't be available for this scene).")
+            tracker.one_done(True)
+
+        self.win.jobs.submit(f"Movie scene {scene.index + 1}: captions", work,
                              on_done=done, on_fail=fail)
 
     def _audio_batch_done(self, on_all_done: Optional[Callable]) -> None:
@@ -673,7 +765,7 @@ class PipelineRun(QObject):
         img_item = self.win.project.media.get(img.media_id) if img else None
         aud = scene.audio.active
         aud_item = self.win.project.media.get(aud.media_id) if aud else None
-        prompt = scene.script or self.pipeline.brief
+        prompt = _append_lyric_guidance(scene.script or self.pipeline.brief, scene)
         # Only hand the driving audio to the video call itself when the video
         # model natively hard-syncs to it (resolve_video_plan's native_audio
         # branch) AND this scene actually wants lip-sync - otherwise a silent
@@ -713,10 +805,12 @@ class PipelineRun(QObject):
     def _finish_scene_video(self, scene: Scene, plan: VideoPlan, tracker: _BatchTracker,
                             prompt: str, video_path, on_settled: Optional[Callable]) -> None:
         video_model = plan.video_model
-        item = self.win.bin.add_generated(str(video_path), {
-            "provider": video_model.provider, "model": video_model.id, "prompt": prompt,
-            "mode": "video", "source": "pipeline", "pipeline_id": self.pipeline.id,
-            "scene_id": scene.id})
+        meta = {"provider": video_model.provider, "model": video_model.id, "prompt": prompt,
+               "mode": "video", "source": "pipeline", "pipeline_id": self.pipeline.id,
+               "scene_id": scene.id}
+        if self.pipeline.burn_in_captions and scene.caption_segments:
+            meta["caption_segments"] = _segments_to_dicts(scene.caption_segments)
+        item = self.win.bin.add_generated(str(video_path), meta)
         scene.video.push(StageAsset(media_id=item.id, prompt=prompt, provider=video_model.provider,
                                     model=video_model.id, source="generated", created=time.time()))
         scene.last_error = ""
@@ -750,16 +844,21 @@ class PipelineRun(QObject):
         video_model = plan.video_model
 
         def on_rewritten(rewritten: str) -> None:
+            # Matches _retry_scene_image_after_moderation's own precedent:
+            # the STORED prompt is the fully-augmented one actually sent to
+            # the model, not the pre-augmentation text.
+            retry_prompt = _append_lyric_guidance(rewritten, scene)
+
             def retry_work(job):
                 job.progress(-1, f"Scene {scene.index + 1}: video (retry after moderation)")
                 kwargs = {"image": img_item.path if img_item else None,
                          "progress": job.progress, "should_cancel": lambda: job.cancelled}
                 if native_audio_path:
                     kwargs["audio"] = native_audio_path
-                return video_adapter.generate_video(video_model.id, rewritten, params, **kwargs)
+                return video_adapter.generate_video(video_model.id, retry_prompt, params, **kwargs)
 
             def retry_done(video_path):
-                self._finish_scene_video(scene, plan, tracker, rewritten, video_path, on_settled)
+                self._finish_scene_video(scene, plan, tracker, retry_prompt, video_path, on_settled)
 
             def retry_fail(msg):
                 self._fail_scene_video(

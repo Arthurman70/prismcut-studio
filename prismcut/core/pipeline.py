@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import paths
+from .captions import Segment
 
 # status values, in order: draft -> scenes_ready -> images_running ->
 # images_ready -> video_running -> done
@@ -102,12 +103,22 @@ class Scene:
     # cleared on the next successful attempt for that stage. "" means no
     # error is currently outstanding, regardless of how many succeeded before.
     last_error: str = ""
+    # Transcribed from this scene's own narration audio once generated (see
+    # pipeline_orchestrator._chain_caption_transcription), when the
+    # pipeline's MoviePipeline.auto_captions opt-in is set and a
+    # transcribe_segments-capable model is configured - empty otherwise.
+    # Feeds two independent, optional consumers: lyric-guidance context
+    # appended to this scene's video-generation prompt, and (only when
+    # MoviePipeline.burn_in_captions is also on) rendered caption text
+    # burned into the final export.
+    caption_segments: list = field(default_factory=list)   # list[Segment]
 
     @classmethod
     def from_dict(cls, d: dict) -> "Scene":
         d = dict(d)
         for stage in ("image", "audio", "video", "lipsync"):
             d[stage] = SceneHistory.from_dict(d.get(stage) or {})
+        d["caption_segments"] = [Segment(**s) for s in d.get("caption_segments") or []]
         return cls(**d)
 
 
@@ -154,6 +165,22 @@ class MoviePipeline:
     # images as continuity reference, a real ordering dependency video
     # generation doesn't have).
     video_concurrency: int = 1
+    # Opt-in: automatically transcribe each scene's narration audio once it
+    # generates (needs a transcribe_segments-capable model - real support
+    # exists only for openai::whisper-1 as of this writing, every other
+    # provider raises NotSupported). A real, if cheap, per-scene API spend
+    # this codebase would otherwise gate carefully - default False so it
+    # never fires just because a user happens to have an OpenAI key.
+    # Powers Scene.caption_segments, which in turn feeds lyric-guidance
+    # context and (separately, see burn_in_captions) rendered captions.
+    auto_captions: bool = False
+    # Whether the final render actually burns Scene.caption_segments onto
+    # the video as visible text (core.render's drawtext extension) -
+    # independent of auto_captions itself, which only controls whether the
+    # DATA gets transcribed at all. Default off: captions existing as data
+    # (for lyric-guidance) shouldn't silently change what an export looks
+    # like unless the user explicitly asks for burned-in text too.
+    burn_in_captions: bool = False
     video_track_id: str = ""
     audio_track_id: str = ""
     status: str = "draft"
