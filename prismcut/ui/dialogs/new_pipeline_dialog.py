@@ -4,9 +4,9 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
-                               QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                               QPlainTextEdit, QPushButton)
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QMessageBox, QPlainTextEdit, QPushButton)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
@@ -122,6 +122,23 @@ class NewPipelineDialog(QDialog):
             "scene length below guide it and drive the cost preview, they don't hard-cap it.")
         form.addRow("Target length", self.target_minutes)
 
+        # A friendlier way to set the raw number below - each preset just
+        # writes a representative value into default_seconds (still clamped
+        # to whatever the selected video model actually supports), it
+        # doesn't lock the spinbox - picking "Rapid" then nudging the number
+        # afterward is fine, no separate "Custom" mode to fall out of.
+        self.cutpace_combo = QComboBox()
+        self.cutpace_combo.addItem("🎯 Patient — long, deliberate shots", 10.0)
+        self.cutpace_combo.addItem("🎵 Music video — medium-paced cuts", 6.0)
+        self.cutpace_combo.addItem("⚡ Rapid — quick cuts", 2.0)
+        self.cutpace_combo.addItem("🔧 Custom — set the exact seconds below", None)
+        self.cutpace_combo.setCurrentIndex(1)
+        self.cutpace_combo.setToolTip(
+            "Sets the default scene length below to a representative value for this pace - "
+            "pick Custom to type an exact number instead.")
+        self.cutpace_combo.currentIndexChanged.connect(self._cutpace_changed)
+        form.addRow("Cut pace", self.cutpace_combo)
+
         self.default_seconds = QDoubleSpinBox()
         self.default_seconds.setDecimals(1)
         self.default_seconds.setToolTip(
@@ -130,6 +147,7 @@ class NewPipelineDialog(QDialog):
         form.addRow("Default scene length", self.default_seconds)
         self.video_combo.currentIndexChanged.connect(self._clamp_default_seconds)
         self._clamp_default_seconds()
+        self._cutpace_changed()
 
         self.cost_label = label("", dim=True)
         self.cost_label.setWordWrap(True)
@@ -245,6 +263,11 @@ class NewPipelineDialog(QDialog):
         except (TypeError, ValueError):
             default = lo
         self.default_seconds.setValue(max(lo, min(hi, default)))
+
+    def _cutpace_changed(self, _idx: int = 0):
+        seconds = self.cutpace_combo.currentData()
+        if seconds is not None:
+            self.default_seconds.setValue(seconds)   # clamped automatically by setRange()
 
     def _scene_count_hint(self) -> int:
         seconds = max(1.0, self.default_seconds.value())

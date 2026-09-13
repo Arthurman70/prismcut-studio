@@ -666,6 +666,44 @@ def test_new_pipeline_dialog_default_scene_length_clamps_to_video_model(win):
         dlg.close()
 
 
+def test_new_pipeline_dialog_cutpace_presets_set_default_seconds(win):
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        idx = dlg.video_combo.findData("xai::grok-imagine-video-1.5")   # 1-15s range, no clamping needed
+        dlg.video_combo.setCurrentIndex(idx)
+
+        dlg.cutpace_combo.setCurrentIndex(dlg.cutpace_combo.findData(10.0))   # Patient
+        assert dlg.default_seconds.value() == pytest.approx(10.0)
+
+        dlg.cutpace_combo.setCurrentIndex(dlg.cutpace_combo.findData(2.0))   # Rapid
+        assert dlg.default_seconds.value() == pytest.approx(2.0)
+
+        dlg.default_seconds.setValue(7.5)
+        dlg.cutpace_combo.setCurrentIndex(dlg.cutpace_combo.findData(None))   # Custom
+        assert dlg.default_seconds.value() == pytest.approx(7.5)   # untouched, not reset to 0
+    finally:
+        dlg.close()
+
+
+def test_new_pipeline_dialog_cutpace_preset_clamps_to_the_video_models_own_range(win):
+    from prismcut.ui.dialogs.new_pipeline_dialog import NewPipelineDialog
+
+    dlg = NewPipelineDialog(win.registry, win.settings, win.jobs, win.get_adapter, win)
+    try:
+        idx = dlg.video_combo.findData("google::veo-3.1-generate-preview")   # 4-8s range
+        dlg.video_combo.setCurrentIndex(idx)
+
+        dlg.cutpace_combo.setCurrentIndex(dlg.cutpace_combo.findData(10.0))   # Patient - above the max
+        assert dlg.default_seconds.value() == pytest.approx(8.0)   # clamped, not silently rejected
+
+        dlg.cutpace_combo.setCurrentIndex(dlg.cutpace_combo.findData(2.0))   # Rapid - below the min
+        assert dlg.default_seconds.value() == pytest.approx(4.0)
+    finally:
+        dlg.close()
+
+
 def test_new_pipeline_dialog_reference_images_flow_into_pipeline(win, tmp_path):
     """The reference "cast" upload: add_reference()/the file dialog both
     feed the same list, and it lands on the created MoviePipeline verbatim
@@ -2588,6 +2626,7 @@ def test_fire_confirm_dialog_uses_its_own_settings_key_and_combined_cost(win, mo
         return False   # decline - nothing must actually fire
 
     monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive", fake_confirm)
+    monkeypatch.setattr(movie_pipeline_mod.AspectRatioPickDialog, "exec", lambda self: 0)
     try:
         win.movie._run_fire()
         assert captured["key"] == "pipeline_run_fire_batch"
@@ -2621,6 +2660,7 @@ def test_fire_confirm_dialog_includes_lipsync_cost_when_configured(win, monkeypa
     monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
                         lambda parent, settings, key, title, text, ok_text:
                         captured.setdefault("text", text) and False)
+    monkeypatch.setattr(movie_pipeline_mod.AspectRatioPickDialog, "exec", lambda self: 0)
     try:
         win.movie._run_fire()
         assert "lip-sync ~$" in captured["text"]
@@ -2653,6 +2693,7 @@ def test_fire_runs_images_then_chains_into_video_for_every_remaining_scene(win, 
     win.get_adapter = lambda provider: FakeAdapter()
     monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
                         lambda parent, settings, key, title, text, ok_text: True)
+    monkeypatch.setattr(movie_pipeline_mod.AspectRatioPickDialog, "exec", lambda self: 0)
     try:
         win.movie._run_fire()
         assert _wait_until(lambda: all(s.video.active for s in pipeline.scenes), timeout=10.0)
@@ -2690,12 +2731,132 @@ def test_fire_degrades_to_just_video_when_every_image_already_exists(win, monkey
     win.get_adapter = lambda provider: FakeVideoOnlyAdapter()
     monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
                         lambda parent, settings, key, title, text, ok_text: True)
+    monkeypatch.setattr(movie_pipeline_mod.AspectRatioPickDialog, "exec", lambda self: 0)
     try:
         win.movie._run_fire()
         assert _wait_until(lambda: scene.video.active is not None, timeout=10.0)
     finally:
         win.get_adapter = saved_get_adapter
         win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_maybe_pick_aspect_ratio_skipped_when_video_model_has_no_aspect_ratio_param(win, monkeypatch):
+    """Sora/GPT-Image use an unrelated `size` param instead of aspect_ratio
+    - Fire must not show a picker keyed off a param that model doesn't
+    even have."""
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="No aspect ratio param test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="openai::sora-2")
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    shown = []
+    monkeypatch.setattr(movie_pipeline_mod.AspectRatioPickDialog, "exec",
+                        lambda self: shown.append(1) or 0)
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
+                        lambda parent, settings, key, title, text, ok_text: False)
+    try:
+        win.movie._run_fire()
+        assert shown == []
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_maybe_pick_aspect_ratio_applies_chosen_ratio_to_default_model_scenes(win, monkeypatch):
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Aspect ratio apply test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")   # has aspect_ratio choices
+    s1, s2 = new_scene(0), new_scene(1)
+    pipeline.scenes = [s1, s2]
+    win.movie._set_pipeline(pipeline)
+
+    def fake_exec(dlg_self):
+        for btn in dlg_self._group.buttons():
+            if btn.text() == "9:16":
+                btn.setChecked(True)
+        return 1   # QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(movie_pipeline_mod.AspectRatioPickDialog, "exec", fake_exec)
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
+                        lambda parent, settings, key, title, text, ok_text: False)
+    try:
+        win.movie._run_fire()
+        assert s1.video_params["aspect_ratio"] == "9:16"
+        assert s1.image_params["aspect_ratio"] == "9:16"
+        assert s2.video_params["aspect_ratio"] == "9:16"
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_maybe_pick_aspect_ratio_skips_scenes_with_a_per_scene_model_override(win, monkeypatch):
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Aspect ratio override test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    default_scene = new_scene(0)
+    overridden_scene = new_scene(1)
+    overridden_scene.video_model = "google::veo-3.1-generate-preview"   # a different model
+    pipeline.scenes = [default_scene, overridden_scene]
+    win.movie._set_pipeline(pipeline)
+    captured = {}
+
+    def fake_exec(dlg_self):
+        captured["overridden_count"] = dlg_self.overridden_count
+        for btn in dlg_self._group.buttons():
+            if btn.text() == "1:1":
+                btn.setChecked(True)
+        return 1
+
+    monkeypatch.setattr(movie_pipeline_mod.AspectRatioPickDialog, "exec", fake_exec)
+    monkeypatch.setattr(movie_pipeline_mod, "confirm_destructive",
+                        lambda parent, settings, key, title, text, ok_text: False)
+    try:
+        win.movie._run_fire()
+        assert captured["overridden_count"] == 1   # the veo scene, counted but not touched
+        assert default_scene.video_params["aspect_ratio"] == "1:1"
+        assert "aspect_ratio" not in overridden_scene.video_params
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_param_form_clamps_an_int_param_exceeding_qspinbox_range():
+    """Real bug, found via a per-scene video-model override to Veo 3.1
+    (seed max: 4294967295, a valid uint32 range on Google's own side) -
+    QSpinBox.setRange() only supports a signed 32-bit C++ int and overflows
+    outright above 2**31-1. Must clamp, not crash the whole form."""
+    from prismcut.core.registry import ModelSpec
+    from prismcut.ui.panels.generate_panel import ParamForm
+
+    model = ModelSpec(id="test-model", provider="test", label="Test",
+                      params=[{"name": "seed", "label": "Seed", "type": "int",
+                              "min": -1, "max": 4294967295, "default": -1}])
+    form = ParamForm()
+    form.build(model)   # must not raise OverflowError
+    assert form.widgets["seed"].maximum() == 2**31 - 1
+    assert form.widgets["seed"].value() == -1
+
+
+def test_aspect_ratio_pick_dialog_pre_checks_current_and_shows_override_note():
+    from prismcut.ui.panels.movie_pipeline import AspectRatioPickDialog
+
+    dlg = AspectRatioPickDialog(["16:9", "9:16", "1:1"], "9:16", overridden_count=2)
+    try:
+        checked = [b for b in dlg._group.buttons() if b.isChecked()]
+        assert len(checked) == 1
+        assert checked[0].text() == "9:16"
+        assert dlg.chosen() == "9:16"
+    finally:
+        dlg.close()
 
 
 def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):

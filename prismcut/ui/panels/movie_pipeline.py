@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QPlainTextEdit,
-                               QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
+                               QInputDialog, QLabel, QPlainTextEdit, QPushButton, QScrollArea,
+                               QTabWidget, QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
@@ -362,6 +363,49 @@ class ScriptSceneRow(QWidget):
         self.title.setText(f"Scene {self.scene.index + 1}")
         sync_text_edit(self.script_edit, self.scene.script)
         sync_text_edit(self.narration_edit, self.scene.narration)
+
+
+class AspectRatioPickDialog(QDialog):
+    """Prominent tile picker shown before Fire's cost confirm, when the
+    pipeline's own default video model exposes aspect_ratio as a param -
+    replaces having to open a scene's Details and hunt for the plain
+    dropdown ParamForm already renders for it (unchanged, still there for
+    per-scene overrides). One dialog, one job: pick a ratio or cancel."""
+
+    def __init__(self, choices: list, current: str, overridden_count: int, parent=None):
+        super().__init__(parent)
+        self.overridden_count = overridden_count   # kept as a plain attribute for tests to inspect
+        self.setWindowTitle("Choose aspect ratio")
+        v = QVBoxLayout(self)
+        v.addWidget(label("Applies to every scene using the pipeline's own default model:",
+                          dim=True))
+        row = QHBoxLayout()
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        for choice in choices:
+            btn = QPushButton(str(choice))
+            btn.setCheckable(True)
+            btn.setMinimumHeight(36)
+            if str(choice) == current:
+                btn.setChecked(True)
+            self._group.addButton(btn)
+            row.addWidget(btn)
+        v.addLayout(row)
+        if overridden_count:
+            note = label(f"{overridden_count} scene(s) use a different model - set aspect "
+                         "ratio in their own Details instead.", dim=True)
+            v.addWidget(note)
+
+        buttons = QDialogButtonBox()
+        buttons.addButton("Use this", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def chosen(self) -> str | None:
+        checked = self._group.checkedButton()
+        return checked.text() if checked else None
 
 
 class MoviePipelinePanel(QWidget):
@@ -809,6 +853,43 @@ class MoviePipelinePanel(QWidget):
                         if getattr(s, active).active is None), key=lambda s: s.index)
         return scenes if limit is None else scenes[:limit]
 
+    def _maybe_pick_aspect_ratio(self, image_targets: list, video_targets: list) -> None:
+        """Shows AspectRatioPickDialog before Fire's cost confirm, when the
+        pipeline's own default video model exposes aspect_ratio as a param
+        (most video models do; Sora/GPT-Image use an unrelated `size` param
+        instead and get no picker here at all - ParamForm's own generic
+        dropdown, unaffected by this method, is still there for anyone
+        setting one by hand). Only ever writes onto scenes using the
+        pipeline's default model for BOTH stages - a single Fire click can
+        span scenes on genuinely different models with different choice
+        sets, so a scene with its own per-scene override keeps whatever its
+        own Details section already has instead of being silently
+        overwritten by a picker keyed off a model it isn't even using."""
+        pipeline = self.run.pipeline
+        model = self.registry.by_key(pipeline.video_model)
+        spec = next((p for p in (model.params if model else [])
+                    if p.get("name") == "aspect_ratio"), None)
+        if not spec or not spec.get("choices"):
+            return
+        targets_by_id = {s.id: s for s in image_targets + video_targets}
+        all_targets = list(targets_by_id.values())
+        default_scenes = [s for s in all_targets if not s.image_model and not s.video_model]
+        if not default_scenes:
+            return
+        overridden_count = len(all_targets) - len(default_scenes)
+        current = str(default_scenes[0].video_params.get("aspect_ratio")
+                      or spec.get("default") or spec["choices"][0])
+        dlg = AspectRatioPickDialog(spec["choices"], current, overridden_count, self.win)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = dlg.chosen()
+        if not chosen:
+            return
+        for scene in default_scenes:
+            scene.image_params["aspect_ratio"] = chosen
+            scene.video_params["aspect_ratio"] = chosen
+        self.run.pipeline.save()
+
     def _estimate_lipsync_cost(self, video_targets: list) -> float | None:
         """Lip-sync pricing for Fire's combined estimate. The two existing
         per-stage buttons have never priced this at all - a pre-existing
@@ -942,6 +1023,10 @@ class MoviePipelinePanel(QWidget):
         if not image_targets and not video_targets:
             self.status.emit("Every scene already has both an image and a video.")
             return
+        # Optional - cancelling this sub-step just leaves the aspect ratio
+        # as whatever it already was and continues on to the cost confirm
+        # below, it doesn't abort the whole Fire action.
+        self._maybe_pick_aspect_ratio(image_targets, video_targets)
         pipeline = self.run.pipeline
         parts = []
         total = 0.0

@@ -49,8 +49,15 @@ class ParamForm(QWidget):
             name = p["name"]
             if t == "int":
                 w = QSpinBox()
-                w.setRange(int(p.get("min", -1)), int(p.get("max", (1 << 31) - 1)))
-                w.setValue(int(overrides.get(name, p.get("default", 0))))
+                # QSpinBox's range is a C++ (signed 32-bit) int - some real
+                # model params (e.g. Veo's "seed", max 4294967295 - a valid
+                # uint32 range on the provider's own side) exceed that and
+                # overflow .setRange() outright. Clamp to what the widget can
+                # actually represent rather than crashing the whole form.
+                lo = max(int(p.get("min", -1)), -(2**31))
+                hi = min(int(p.get("max", (1 << 31) - 1)), (2**31) - 1)
+                w.setRange(lo, hi)
+                w.setValue(max(lo, min(hi, int(overrides.get(name, p.get("default", 0))))))
             elif t == "float":
                 w = QDoubleSpinBox()
                 w.setRange(float(p.get("min", 0)), float(p.get("max", 100)))
