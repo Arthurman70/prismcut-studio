@@ -1,6 +1,7 @@
-"""core/media.py's generate_proxy() - mocks ffmpeg_path()/subprocess.run
-rather than invoking real ffmpeg, same spirit as every other test file
-in this suite never hitting a real provider or real ffmpeg."""
+"""core/media.py's ffmpeg-backed helpers (generate_proxy, resolved_duration,
+waveform_png) - mocks ffmpeg_path()/subprocess.run rather than invoking real
+ffmpeg, same spirit as every other test file in this suite never hitting a
+real provider or real ffmpeg."""
 from pathlib import Path
 
 from prismcut.core import media as media_mod
@@ -95,3 +96,50 @@ def test_resolved_duration_returns_none_when_the_reprobe_also_comes_back_empty(m
     monkeypatch.setattr(media_mod, "probe", lambda path: {"duration": 0.0})
 
     assert media_mod.resolved_duration("clip.mp3", 0.0) is None
+
+
+# ----------------------------------------------------------------- waveform_png
+
+def test_waveform_png_cache_key_includes_color_not_just_path_and_size(monkeypatch, tmp_path):
+    """Bug fix: color used to be missing from the on-disk cache key, so a
+    later call for the same file/size but a DIFFERENT color would silently
+    keep returning the FIRST color's already-cached PNG forever."""
+    src = tmp_path / "clip.mp3"
+    src.write_bytes(b"fake-mp3")
+    monkeypatch.setattr(media_mod, "ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr(media_mod.paths, "thumbs_dir", lambda: tmp_path)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"fake-png")
+        calls.append(cmd[-1])
+
+    monkeypatch.setattr(media_mod.subprocess, "run", fake_run)
+
+    red = media_mod.waveform_png(src, color="#ff0000")
+    blue = media_mod.waveform_png(src, color="#0000ff")
+
+    assert red is not None and blue is not None
+    assert red != blue          # different colors must not collide on one cached file
+    assert len(calls) == 2      # ffmpeg actually ran for both - no false cache hit
+
+
+def test_waveform_png_reuses_the_cache_for_the_same_color(monkeypatch, tmp_path):
+    src = tmp_path / "clip.mp3"
+    src.write_bytes(b"fake-mp3")
+    monkeypatch.setattr(media_mod, "ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr(media_mod.paths, "thumbs_dir", lambda: tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"fake-png")
+        calls.append(cmd[-1])
+
+    monkeypatch.setattr(media_mod.subprocess, "run", fake_run)
+
+    first = media_mod.waveform_png(src, color="#ff0000")
+    second = media_mod.waveform_png(src, color="#ff0000")
+
+    assert first == second
+    assert len(calls) == 1   # second call was a genuine cache hit

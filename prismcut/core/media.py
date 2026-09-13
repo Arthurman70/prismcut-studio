@@ -160,7 +160,13 @@ def waveform_png(path, out_png: Optional[Path] = None, width: int = 640, height:
     p = Path(path)
     if not ff or not p.exists():
         return None
-    out = Path(out_png) if out_png else paths.thumbs_dir() / f"wf_{abs(hash((str(p), width, height)))}.png"
+    # color is part of the cache key too - omitting it (the original bug
+    # here) meant a later call for the same path/size but a DIFFERENT color
+    # would silently keep returning the first-ever-cached PNG forever, since
+    # the `out.exists()` check below never even looks at what color that
+    # cached file was actually rendered with.
+    out = (Path(out_png) if out_png
+          else paths.thumbs_dir() / f"wf_{abs(hash((str(p), width, height, color)))}.png")
     if out.exists():
         return out
     try:

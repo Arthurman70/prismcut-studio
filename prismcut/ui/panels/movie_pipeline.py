@@ -45,6 +45,98 @@ def _scene_status_icon(scene: Scene) -> str:
     return STATUS_ICONS["queued"]
 
 
+def _scene_status_color(scene: Scene) -> str:
+    from .. import theme
+    if scene.last_error:
+        return theme.DANGER
+    if scene.video.active:
+        return theme.ACCENT
+    if scene.image.active:
+        return theme.ORANGE
+    return theme.TEXT_DIM
+
+
+class SceneStatusStrip(QWidget):
+    """Compact horizontal per-scene status strip - one small waveform
+    thumbnail per scene (that scene's own narration audio, once generated)
+    with a colored border for status. PrismCut's pipeline is narration-
+    driven (each scene gets its own short TTS clip), not song-driven like
+    the reference product this was inspired by (no "upload one song for
+    the whole movie" concept exists here) - so this shows a SEQUENCE of
+    scene-owned waveforms rather than one continuous track split into
+    colored regions.
+
+    Status is a colored BORDER around a fixed-color waveform image, not
+    recolored waveform pixels - media.waveform_png()'s on-disk cache is
+    keyed by (path, size, color), so recoloring the waveform itself on
+    every status change would mean re-invoking ffmpeg over and over for
+    the exact same audio just to change its tint. A border achieves the
+    same at-a-glance goal without that churn."""
+
+    CARD_SIZE = (84, 54)
+
+    def __init__(self, panel: "MoviePipelinePanel", parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self._cards: dict[str, QLabel] = {}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.row_host = QWidget()
+        self.row_lay = QHBoxLayout(self.row_host)
+        self.row_lay.setContentsMargins(0, 0, 0, 0)
+        self.row_lay.setSpacing(4)
+        self.row_lay.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidget(self.row_host)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setFixedHeight(self.CARD_SIZE[1] + 14)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+    def rebuild(self) -> None:
+        for card in self._cards.values():
+            card.setParent(None)
+            card.deleteLater()
+        self._cards.clear()
+        run = self.panel.run
+        if not run:
+            return
+        for scene in sorted(run.pipeline.scenes, key=lambda s: s.index):
+            card = QLabel()
+            card.setFixedSize(*self.CARD_SIZE)
+            card.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card.setScaledContents(True)
+            self._cards[scene.id] = card
+            self.row_lay.insertWidget(self.row_lay.count() - 1, card)
+        self.sync_all()
+
+    def sync_all(self) -> None:
+        if not self.panel.run:
+            return
+        for scene in self.panel.run.pipeline.scenes:
+            self.sync_one(scene.id)
+
+    def sync_one(self, scene_id: str) -> None:
+        run = self.panel.run
+        card = self._cards.get(scene_id) if run else None
+        if not card:
+            return
+        scene = run.pipeline.scene(scene_id)
+        if not scene:
+            return
+        aud = scene.audio.active
+        item = run.win.project.media.get(aud.media_id) if aud else None
+        wf = media_utils.waveform_png(item.path, width=self.CARD_SIZE[0] * 2,
+                                      height=self.CARD_SIZE[1] * 2) if item else None
+        card.setPixmap(QPixmap(str(wf)) if wf else QPixmap())
+        card.setStyleSheet(f"border:2px solid {_scene_status_color(scene)};border-radius:4px;"
+                           "background:rgba(127,127,127,30);")
+        card.setToolTip(f"Scene {scene.index + 1}" + (f" — {scene.last_error}"
+                        if scene.last_error else ""))
+
+
 class SceneRow(QWidget):
     jobsRequested = Signal()
     jumpRequested = Signal(str)   # scene_id
@@ -692,6 +784,9 @@ class MoviePipelinePanel(QWidget):
         v.setContentsMargins(4, 4, 4, 4)
         v.setSpacing(6)
 
+        self.generate_status_strip = SceneStatusStrip(self)
+        v.addWidget(self.generate_status_strip)
+
         size_row = QHBoxLayout()
         size_row.addWidget(label("Batch size:", dim=True))
         self.batch_size_combo = QComboBox()
@@ -748,6 +843,14 @@ class MoviePipelinePanel(QWidget):
         return host
 
     def _build_scenes_tab(self) -> QWidget:
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(4, 4, 4, 4)
+        v.setSpacing(6)
+
+        self.scenes_status_strip = SceneStatusStrip(self)
+        v.addWidget(self.scenes_status_strip)
+
         self.list_host = QWidget()
         self.list_lay = QVBoxLayout(self.list_host)
         self.list_lay.setContentsMargins(0, 0, 0, 0)
@@ -757,7 +860,8 @@ class MoviePipelinePanel(QWidget):
         scroll.setWidget(self.list_host)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        return scroll
+        v.addWidget(scroll, 1)
+        return host
 
     def _build_assemble_tab(self) -> QWidget:
         host = QWidget()
@@ -870,21 +974,28 @@ class MoviePipelinePanel(QWidget):
         self.script_status.setText(text)
         self.script_status.setStyleSheet(f"color:{theme.DANGER};" if is_error else "")
 
-    def _on_scene_list_maybe_changed(self, _scene_id: str):
+    def _on_scene_list_maybe_changed(self, scene_id: str):
         # A scene's first asset landing can be the moment scenes go from "not
         # rendered as rows yet" (right after generate_breakdown) to needing
         # rows - cheapest correct check is just comparing row count to scene
         # count rather than tracking that transition explicitly.
         if self.run and len(self._rows) != len(self.run.pipeline.scenes):
             self._rebuild_scene_rows()
+        else:
+            # scene count unchanged - an existing scene's status changed
+            # (image/video landed, an error was set, ...), so the status
+            # strips just need this one card refreshed, not a full rebuild.
+            self.generate_status_strip.sync_one(scene_id)
+            self.scenes_status_strip.sync_one(scene_id)
         self._sync_buttons()
 
     def _rebuild_scene_rows(self):
-        """Rebuilds BOTH the Scenes tab's SceneRow list and the Script tab's
-        ScriptSceneRow list together - one trigger for both, since they're
-        always driven by the exact same condition (the pipeline's own scene
-        list changed shape), rather than two independent rebuild checks that
-        could in principle disagree over what "changed" means."""
+        """Rebuilds the Scenes tab's SceneRow list, the Script tab's
+        ScriptSceneRow list, AND both status strips together - one trigger
+        for all four, since they're always driven by the exact same
+        condition (the pipeline's own scene list changed shape), rather
+        than independent rebuild checks that could in principle disagree
+        over what "changed" means."""
         for row in self._rows.values():
             row.setParent(None)
             row.deleteLater()
@@ -893,6 +1004,8 @@ class MoviePipelinePanel(QWidget):
             row.setParent(None)
             row.deleteLater()
         self._script_rows.clear()
+        self.generate_status_strip.rebuild()
+        self.scenes_status_strip.rebuild()
         if not self.run:
             return
         for scene in sorted(self.run.pipeline.scenes, key=lambda s: s.index):

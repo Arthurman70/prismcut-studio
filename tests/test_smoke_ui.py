@@ -989,6 +989,75 @@ def test_movie_pipeline_show_scenes_tab_switches_to_the_scenes_page(win):
     assert win.movie.stage_tabs.currentWidget() is win.movie._scenes_tab
 
 
+def test_scene_status_strip_rebuild_creates_one_card_per_scene(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Status strip count test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0), new_scene(1), new_scene(2)]
+    try:
+        win.movie._set_pipeline(pipeline)
+        assert len(win.movie.generate_status_strip._cards) == 3
+        assert len(win.movie.scenes_status_strip._cards) == 3
+        assert set(win.movie.generate_status_strip._cards) == {s.id for s in pipeline.scenes}
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_status_strip_border_color_reflects_scene_status(win):
+    from prismcut.ui import theme
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Status strip color test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    queued = new_scene(0)
+    imaged = new_scene(1)
+    imaged.image.push(StageAsset(media_id="fake", source="generated"))
+    videoed = new_scene(2)
+    videoed.video.push(StageAsset(media_id="fake", source="generated"))
+    errored = new_scene(3)
+    errored.last_error = "something went wrong"
+    pipeline.scenes = [queued, imaged, videoed, errored]
+    try:
+        win.movie._set_pipeline(pipeline)
+        strip = win.movie.scenes_status_strip
+        assert theme.TEXT_DIM in strip._cards[queued.id].styleSheet()
+        assert theme.ORANGE in strip._cards[imaged.id].styleSheet()
+        assert theme.ACCENT in strip._cards[videoed.id].styleSheet()
+        assert theme.DANGER in strip._cards[errored.id].styleSheet()
+        assert "something went wrong" in strip._cards[errored.id].toolTip()
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_status_strip_sync_one_updates_without_a_full_rebuild(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Status strip incremental test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    scene = new_scene(0)
+    pipeline.scenes = [scene]
+    try:
+        win.movie._set_pipeline(pipeline)
+        strip = win.movie.scenes_status_strip
+        card_before = strip._cards[scene.id]
+
+        scene.last_error = "a real error"
+        win.movie.run.sceneChanged.emit(scene.id)   # count unchanged - should sync in place
+
+        assert strip._cards[scene.id] is card_before   # same card object, not rebuilt
+        from prismcut.ui import theme
+        assert theme.DANGER in card_before.styleSheet()
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_movie_pipeline_panel_loads_pipeline_and_builds_scene_rows(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 
