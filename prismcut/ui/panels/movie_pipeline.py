@@ -11,17 +11,20 @@ raises the Effects dock on clip selection rather than duplicating progress
 UI locally."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QHBoxLayout, QInputDialog, QLabel, QPlainTextEdit, QPushButton,
-                               QScrollArea, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
+                               QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel,
+                               QPlainTextEdit, QPushButton, QScrollArea, QTabWidget,
+                               QTextBrowser, QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
 from ...core import paths
 from ...core.pipeline import MoviePipeline, Scene
-from ...core.pipeline_orchestrator import PipelineRun
+from ...core.pipeline_orchestrator import PipelineRun, _append_lyric_guidance
 from ...providers.base import ChatMessage
 from ..dialogs.new_pipeline_dialog import NewPipelineDialog
 from ..widgets.common import (STATUS_ICONS, CollapsibleSection, DropAcceptor, ModelCombo,
@@ -224,7 +227,21 @@ class SceneRow(QWidget):
         self.script_edit = QPlainTextEdit(self.scene.script)
         self.script_edit.setMaximumHeight(90)
         self.script_edit.setPlaceholderText("Describe what happens in this scene…")
+        self.script_edit.textChanged.connect(self._update_char_count)
         v.addWidget(self.script_edit)
+
+        char_row = QHBoxLayout()
+        self.char_count_label = label("", dim=True)
+        char_row.addWidget(self.char_count_label, 1)
+        copy_prompt_btn = QPushButton("📋 Copy generation prompt")
+        copy_prompt_btn.setToolTip(
+            "Copies the actual text that would be sent for generation - this scene's script "
+            "(or the movie's brief, if the script is still blank) plus any lyric guidance "
+            "from transcribed captions, if this scene has any.")
+        copy_prompt_btn.clicked.connect(self._copy_generation_prompt)
+        char_row.addWidget(copy_prompt_btn)
+        v.addLayout(char_row)
+        self._update_char_count()
 
         registry = self.run.win.registry
         settings = self.run.win.settings
@@ -325,13 +342,24 @@ class SceneRow(QWidget):
         if scene_id == self.scene.id:
             self.sync()
 
+    def _update_char_count(self) -> None:
+        n = len(self.script_edit.toPlainText())
+        self.char_count_label.setText(f"{n:,} char{'s' if n != 1 else ''}")
+
+    def _copy_generation_prompt(self) -> None:
+        prompt = self.script_edit.toPlainText().strip() or self.run.pipeline.brief
+        prompt = _append_lyric_guidance(prompt, self.scene)
+        QApplication.clipboard().setText(prompt)
+        self.run.win.toast("✓ Copied this scene's generation prompt.", "success")
+
     def _image_take_selected(self, index: int):
         self.run.set_active_take(self.scene.id, "image", index)
 
     def _video_take_selected(self, index: int):
         self.run.set_active_take(self.scene.id, "video", index)
 
-    def _sync_take_filmstrip(self, history, filmstrip: TakeFilmstrip, label_widget) -> None:
+    def _sync_take_filmstrip(self, history, filmstrip: TakeFilmstrip, label_widget,
+                             base_text: str) -> None:
         # Hidden for the common single-take case - browsing has nothing to
         # offer until there's actually more than one take to pick between,
         # and this Details section is already fairly busy.
@@ -341,10 +369,18 @@ class SceneRow(QWidget):
         if not show:
             return
         thumbs = []
+        total_bytes = 0
         for entry in history.entries:
             item = self.run.win.project.media.get(entry.media_id) if entry.media_id else None
             thumbs.append(media_utils.thumbnail(item.path) if item else None)
+            if item:
+                try:
+                    total_bytes += Path(item.path).stat().st_size
+                except OSError:
+                    pass   # a stale/offline reference just doesn't count toward the total
         filmstrip.set_entries(thumbs, history.current)
+        mb = total_bytes / (1024 * 1024)
+        label_widget.setText(f"{base_text} ({len(history.entries)} takes, ~{mb:.1f} MB)")
 
     def sync(self):
         self.icon.setText(_scene_status_icon(self.scene))
@@ -373,8 +409,10 @@ class SceneRow(QWidget):
         # in script_edit (e.g. regenerating video while tweaking the next
         # scene's script). A focused field means the user owns its text.
         sync_text_edit(self.script_edit, self.scene.script)
-        self._sync_take_filmstrip(self.scene.image, self.image_takes, self.image_takes_label)
-        self._sync_take_filmstrip(self.scene.video, self.video_takes, self.video_takes_label)
+        self._sync_take_filmstrip(self.scene.image, self.image_takes, self.image_takes_label,
+                                  "Past image takes — click to switch")
+        self._sync_take_filmstrip(self.scene.video, self.video_takes, self.video_takes_label,
+                                  "Past video takes — click to switch")
 
     def _edit_prompt(self):
         text, ok = QInputDialog.getMultiLineText(

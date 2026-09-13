@@ -2228,6 +2228,115 @@ def test_scene_row_details_panel_prefills_and_saves_script_and_params(win):
         win.movie._set_pipeline(MoviePipeline(name="empty"))
 
 
+def test_scene_row_char_count_updates_as_script_is_edited(win):
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Char count test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    try:
+        row = win.movie._rows[scene.id]
+        assert row.char_count_label.text() == "0 chars"
+
+        row.script_edit.setPlainText("A robot dances in the rain.")
+        assert row.char_count_label.text() == "27 chars"
+
+        row.script_edit.setPlainText("x")
+        assert row.char_count_label.text() == "1 char"   # singular, not "1 chars"
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_row_copy_generation_prompt_copies_script_and_lyric_guidance(win, monkeypatch):
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.captions import Segment
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Copy prompt test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    scene = new_scene(0)
+    scene.script = "A robot dances in the rain."
+    scene.caption_segments = [Segment(0.0, 1.0, "Dancing time")]
+    pipeline.scenes = [scene]
+    win.movie._set_pipeline(pipeline)
+    captured = {}
+
+    class FakeClipboard:
+        def setText(self, text):
+            captured["text"] = text
+
+    # Monkeypatch the class method itself (not a real OS clipboard call) -
+    # this suite has no existing precedent for exercising the real
+    # clipboard under the offscreen QPA platform, and the point of this
+    # test is the PROMPT TEXT computed, not clipboard integration itself.
+    monkeypatch.setattr(movie_pipeline_mod.QApplication, "clipboard", lambda: FakeClipboard())
+    try:
+        row = win.movie._rows[scene.id]
+        row._copy_generation_prompt()
+        assert "A robot dances in the rain." in captured["text"]
+        assert "Dancing time" in captured["text"]   # lyric guidance included too
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_row_copy_generation_prompt_falls_back_to_brief_when_script_is_blank(win, monkeypatch):
+    import prismcut.ui.panels.movie_pipeline as movie_pipeline_mod
+    from prismcut.core.pipeline import MoviePipeline, new_scene
+
+    pipeline = MoviePipeline(name="Copy prompt fallback test", brief="The movie's overall brief.",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    win.movie._set_pipeline(pipeline)
+    captured = {}
+    monkeypatch.setattr(movie_pipeline_mod.QApplication, "clipboard",
+                        lambda: type("C", (), {"setText": staticmethod(
+                            lambda t: captured.setdefault("text", t))})())
+    try:
+        row = win.movie._rows[pipeline.scenes[0].id]
+        row._copy_generation_prompt()
+        assert captured["text"] == "The movie's overall brief."
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
+def test_scene_row_take_filmstrip_label_shows_take_count_and_size(win, tmp_path):
+    from prismcut.core.pipeline import MoviePipeline, StageAsset, new_scene
+
+    pipeline = MoviePipeline(name="Take size test", brief="brief",
+                             script_model="google::gemini-3.6-flash",
+                             image_model="google::gemini-3.1-flash-image",
+                             video_model="xai::grok-imagine-video-1.5")
+    pipeline.scenes = [new_scene(0)]
+    scene = pipeline.scenes[0]
+    win.movie._set_pipeline(pipeline)
+    try:
+        f1 = tmp_path / "take1.png"
+        f1.write_bytes(b"x" * 1024)          # 1 KB
+        f2 = tmp_path / "take2.png"
+        f2.write_bytes(b"x" * (1024 * 1024))  # 1 MB
+        take0 = win.bin.add_generated(str(f1), {"mode": "image"})
+        take1 = win.bin.add_generated(str(f2), {"mode": "image"})
+        scene.image.push(StageAsset(media_id=take0.id, source="generated"))
+        scene.image.push(StageAsset(media_id=take1.id, source="generated"))
+
+        row = win.movie._rows[scene.id]
+        row.sync()
+
+        text = row.image_takes_label.text()
+        assert "2 takes" in text
+        assert "~1.0 MB" in text   # ~1KB + ~1MB rounds to 1.0 MB at one decimal place
+    finally:
+        win.movie._set_pipeline(MoviePipeline(name="empty"))
+
+
 def test_sync_text_edit_does_not_clobber_a_focused_field_but_updates_an_unfocused_one():
     # A plain duck-typed stand-in, not a real QWidget - this suite has no
     # existing precedent for real OS-level setFocus()/hasFocus() on a bare
