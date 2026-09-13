@@ -509,6 +509,7 @@ class MainWindow(QMainWindow):
             if not self.movie.load_pipeline_by_id(pipeline_id):
                 return
         self.tabs.setCurrentWidget(self.movie)
+        self.movie.show_scenes_tab()
         self.movie.run.regenerate_scene_current_stage(scene_id)
 
     def _razor_selected(self):

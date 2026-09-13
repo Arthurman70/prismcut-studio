@@ -909,6 +909,48 @@ def test_import_script_paste_box_has_spellcheck_highlighter(win):
         dlg.close()
 
 
+def _is_descendant(widget, ancestor) -> bool:
+    w = widget
+    while w is not None:
+        if w is ancestor:
+            return True
+        w = w.parent()
+    return False
+
+
+def test_movie_pipeline_panel_has_five_stage_tabs_in_order(win):
+    labels = [win.movie.stage_tabs.tabText(i) for i in range(win.movie.stage_tabs.count())]
+    assert [lbl.split(" ", 1)[1] for lbl in labels] == \
+        ["Inputs", "Script", "Generate", "Scenes", "Assemble"]
+
+
+def test_movie_pipeline_relocated_widgets_live_in_their_expected_tab(win):
+    """Every widget kept its pre-tab-rework attribute name (so the rest of
+    this file's ~150 existing Movie Pipeline tests don't need to change) -
+    this test instead confirms WHICH tab page each one actually lives under
+    now, checked via the parent chain (not isVisible(), which depends on
+    which tab happens to be current when the test runs - not what's being
+    tested here)."""
+    tabs = win.movie.stage_tabs
+    assert _is_descendant(win.movie.load_combo, tabs.widget(0))       # Inputs
+    assert _is_descendant(win.movie.script_status, tabs.widget(1))    # Script
+    assert _is_descendant(win.movie.retry_script_btn, tabs.widget(1))
+    assert _is_descendant(win.movie.batch_size_combo, tabs.widget(2))  # Generate
+    assert _is_descendant(win.movie.images_btn, tabs.widget(2))
+    assert _is_descendant(win.movie.fire_btn, tabs.widget(2))
+    assert _is_descendant(win.movie.list_host, tabs.widget(3))        # Scenes
+    assert win.movie._scenes_tab is tabs.widget(3)
+    assert _is_descendant(win.movie.assemble_status, tabs.widget(4))  # Assemble
+    # self.summary is the persistent header, OUTSIDE the tab widget entirely
+    assert not _is_descendant(win.movie.summary, tabs)
+
+
+def test_movie_pipeline_show_scenes_tab_switches_to_the_scenes_page(win):
+    win.movie.stage_tabs.setCurrentIndex(0)
+    win.movie.show_scenes_tab()
+    assert win.movie.stage_tabs.currentWidget() is win.movie._scenes_tab
+
+
 def test_movie_pipeline_panel_loads_pipeline_and_builds_scene_rows(win):
     from prismcut.core.pipeline import MoviePipeline, new_scene
 
@@ -2589,6 +2631,7 @@ def test_scene_row_shows_failure_state_and_clears_on_retry_success(win):
     scene = pipeline.scenes[0]
     win.movie._set_pipeline(pipeline)
     win.tabs.setCurrentWidget(win.movie)   # isVisible() below reflects real tab visibility
+    win.movie.show_scenes_tab()            # ...at BOTH nesting levels - SceneRow lives in the inner tab too
     adapter = FailThenSucceedAdapter()
     saved_get_adapter = win.get_adapter
     win.get_adapter = lambda provider: adapter

@@ -1,17 +1,20 @@
 """Movie Pipeline panel: describe-a-movie -> scripted, storyboarded, voiced,
 generated scenes, laid out on the timeline automatically. The deterministic
 stage sequence itself lives in core.pipeline_orchestrator.PipelineRun; this
-panel is just the two confirm-gated stage buttons plus one row per scene -
-the Jobs dock stays the single progress source of truth (per-scene rows show
-only a status icon, click it to raise Jobs), matching how main_window.py
-already raises the Effects dock on clip selection rather than duplicating
-progress UI locally."""
+panel presents it as an explicit Inputs/Script/Generate/Scenes/Assemble
+tabbed pipeline (self.stage_tabs) - every tab freely clickable, no stage-
+gating, matching the only embedded-QTabWidget precedent this app has
+elsewhere (audio_panel.py, nano_tools.py, prompt_lab.py). The Jobs dock
+stays the single progress source of truth (per-scene rows show only a
+status icon, click it to raise Jobs), matching how main_window.py already
+raises the Effects dock on clip selection rather than duplicating progress
+UI locally."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QInputDialog, QLabel, QPlainTextEdit,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget)
 
 from ...core import cost_estimator
 from ...core import media as media_utils
@@ -301,11 +304,54 @@ class MoviePipelinePanel(QWidget):
         self.settings = main_window.settings
         self.run: PipelineRun | None = None
         self._rows: dict[str, SceneRow] = {}
+        self._script_running = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
 
+        # Persistent header, visible regardless of which stage tab is active -
+        # "which movie, how far along" is worth seeing no matter what you're
+        # currently doing with it.
+        self.summary = label("No movie loaded yet — click “New movie…” to describe one.",
+                             dim=True)
+        outer.addWidget(self.summary)
+
+        # Explicit stage-by-stage pipeline (Inputs -> Script -> Generate ->
+        # Scenes -> Assemble), replacing the old single scrolling panel -
+        # every tab is always clickable (no "tab N unlocks after tab N-1"
+        # gating - this codebase's other embedded QTabWidgets, e.g.
+        # audio_panel.py/nano_tools.py/prompt_lab.py, are all flat/ungated
+        # too, and there's no stepper/wizard precedent anywhere to build
+        # gating logic on). Named "Scenes," not "Edit," specifically to
+        # avoid colliding with the app's own outer central tab already named
+        # "🎬  Edit" (main_window.py) - two same-named tabs at two nesting
+        # levels would be a real source of confusion.
+        self.stage_tabs = QTabWidget()
+        outer.addWidget(self.stage_tabs, 1)
+
+        self.stage_tabs.addTab(self._build_inputs_tab(), "📥 Inputs")
+        self.stage_tabs.addTab(self._build_script_tab(), "📝 Script")
+        self.stage_tabs.addTab(self._build_generate_tab(), "🎬 Generate")
+        self._scenes_tab = self._build_scenes_tab()
+        self.stage_tabs.addTab(self._scenes_tab, "🎞 Scenes")
+        self.stage_tabs.addTab(self._build_assemble_tab(), "✅ Assemble")
+
+        self._refresh_load_combo()
+        self._sync_buttons()
+
+    def show_scenes_tab(self) -> None:
+        """Public so callers outside this panel (main_window.py's timeline-
+        driven "Regenerate this scene" action) can land the user on the
+        actual scene list, not whichever inner tab happened to be active
+        last - a regenerating row's status icon/error label only live here."""
+        self.stage_tabs.setCurrentWidget(self._scenes_tab)
+
+    def _build_inputs_tab(self) -> QWidget:
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(4, 4, 4, 4)
+        v.setSpacing(6)
         top = QHBoxLayout()
         new_btn = accent_button("🎬 New movie…")
         new_btn.clicked.connect(self.new_pipeline)
@@ -314,12 +360,15 @@ class MoviePipelinePanel(QWidget):
         self.load_combo.activated.connect(self._load_selected)
         top.addWidget(new_btn)
         top.addWidget(self.load_combo, 1)
-        outer.addLayout(top)
+        v.addLayout(top)
+        v.addStretch(1)
+        return host
 
-        self.summary = label("No movie loaded yet — click “New movie…” to describe one.",
-                             dim=True)
-        outer.addWidget(self.summary)
-
+    def _build_script_tab(self) -> QWidget:
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(4, 4, 4, 4)
+        v.setSpacing(6)
         # Persistent (not just a 5s toast) record of the last script-breakdown
         # attempt - a failure here (bad JSON, provider declined the brief,
         # network error) used to be visible only as a transient toast, easy
@@ -327,7 +376,7 @@ class MoviePipelinePanel(QWidget):
         # visible explanation.
         self.script_status = label("", dim=True)
         self.script_status.setWordWrap(True)
-        outer.addWidget(self.script_status)
+        v.addWidget(self.script_status)
 
         self.retry_script_btn = QPushButton("🔄 Retry script breakdown")
         self.retry_script_btn.setToolTip(
@@ -335,8 +384,15 @@ class MoviePipelinePanel(QWidget):
             "or the AI declined to break it down.")
         self.retry_script_btn.clicked.connect(self._retry_script)
         self.retry_script_btn.setVisible(False)
-        outer.addWidget(self.retry_script_btn)
-        self._script_running = False
+        v.addWidget(self.retry_script_btn)
+        v.addStretch(1)
+        return host
+
+    def _build_generate_tab(self) -> QWidget:
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(4, 4, 4, 4)
+        v.setSpacing(6)
 
         size_row = QHBoxLayout()
         size_row.addWidget(label("Batch size:", dim=True))
@@ -369,7 +425,7 @@ class MoviePipelinePanel(QWidget):
         self.concurrency_combo.currentIndexChanged.connect(self._concurrency_changed)
         size_row.addWidget(self.concurrency_combo)
         size_row.addStretch(1)
-        outer.addLayout(size_row)
+        v.addLayout(size_row)
 
         stage_row = QHBoxLayout()
         self.images_btn = accent_button("🖼 Generate scene images")
@@ -378,7 +434,7 @@ class MoviePipelinePanel(QWidget):
         self.video_btn.clicked.connect(self._run_video)
         stage_row.addWidget(self.images_btn)
         stage_row.addWidget(self.video_btn)
-        outer.addLayout(stage_row)
+        v.addLayout(stage_row)
 
         fire_row = QHBoxLayout()
         self.fire_btn = accent_button("🔫 Fire — finish this movie")
@@ -389,8 +445,11 @@ class MoviePipelinePanel(QWidget):
             "before if you'd rather review images before committing to video.")
         self.fire_btn.clicked.connect(self._run_fire)
         fire_row.addWidget(self.fire_btn)
-        outer.addLayout(fire_row)
+        v.addLayout(fire_row)
+        v.addStretch(1)
+        return host
 
+    def _build_scenes_tab(self) -> QWidget:
         self.list_host = QWidget()
         self.list_lay = QVBoxLayout(self.list_host)
         self.list_lay.setContentsMargins(0, 0, 0, 0)
@@ -400,10 +459,23 @@ class MoviePipelinePanel(QWidget):
         scroll.setWidget(self.list_host)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        outer.addWidget(scroll, 1)
+        return scroll
 
-        self._refresh_load_combo()
-        self._sync_buttons()
+    def _build_assemble_tab(self) -> QWidget:
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(4, 4, 4, 4)
+        v.setSpacing(6)
+        self.assemble_status = label("No movie loaded yet.", dim=True)
+        self.assemble_status.setWordWrap(True)
+        v.addWidget(self.assemble_status)
+        export_btn = accent_button("📤 Export…")
+        export_btn.setToolTip("Opens the app's Export dialog to render your project - the "
+                              "same Export any other timeline content uses.")
+        export_btn.clicked.connect(self.win.export_dialog)
+        v.addWidget(export_btn)
+        v.addStretch(1)
+        return host
 
     # ------------------------------------------------------------- lifecycle
     def _refresh_load_combo(self):
@@ -605,6 +677,24 @@ class MoviePipelinePanel(QWidget):
                                     "(or didn't finish) for this movie.")
         elif not needs_script:
             self.script_status.setText("")
+        self._sync_assemble_status(p, total, images_remaining, video_remaining)
+
+    def _sync_assemble_status(self, p: MoviePipeline | None, total: int,
+                              images_remaining: int, video_remaining: int) -> None:
+        if not p:
+            self.assemble_status.setText("No movie loaded yet.")
+            return
+        if not p.scenes:
+            self.assemble_status.setText("No scenes yet - finish the Script stage first.")
+            return
+        if video_remaining == 0:
+            self.assemble_status.setText(
+                f"“{p.name}” is complete - all {total} scene(s) have video. Export below when "
+                "you're ready.")
+        else:
+            self.assemble_status.setText(
+                f"“{p.name}”: {total - images_remaining}/{total} scene(s) have images, "
+                f"{total - video_remaining}/{total} have video. Finish in the Generate tab.")
 
     @staticmethod
     def _batch_wording(remaining: int, limit: int | None) -> str:
