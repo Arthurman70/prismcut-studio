@@ -209,6 +209,20 @@ class AudioPanel(QWidget):
         self.ai_text.setMinimumHeight(80)
         av.addWidget(self.ai_text)
 
+        # Separate from ai_text: music models (Suno, MiniMax Music) take a
+        # style/genre prompt and an independent block of actual song lyrics
+        # as two distinct inputs - conflating them into one field meant the
+        # "lyrics" param several models declare in models.json had no UI
+        # control that ever wrote to it, so custom-lyric songs were
+        # unreachable even with a supporting key configured.
+        self.ai_lyrics_label = label("Lyrics (optional - blank = instrumental / "
+                                     "auto-written lyrics, provider-dependent)", dim=True)
+        av.addWidget(self.ai_lyrics_label)
+        self.ai_lyrics = QPlainTextEdit()
+        self.ai_lyrics.setPlaceholderText("[Verse 1]\n…\n\n[Chorus]\n…")
+        self.ai_lyrics.setMinimumHeight(90)
+        av.addWidget(self.ai_lyrics)
+
         drow = QHBoxLayout()
         drow.addWidget(QLabel("Duration (s)"))
         self.ai_duration = QDoubleSpinBox()
@@ -335,8 +349,11 @@ class AudioPanel(QWidget):
         self.ai_model.refresh()
         self.ai_voice.setVisible(kind == "tts")
         self.ai_duration.setVisible(kind in ("music", "sfx"))
+        self.ai_lyrics_label.setVisible(kind == "music")
+        self.ai_lyrics.setVisible(kind == "music")
         ph = {"tts": "Text to speak…",
-              "music": "Describe the track: genre, mood, tempo, instruments…",
+              "music": "Style prompt: genre, mood, tempo, instruments… (not the lyrics - "
+                       "use the Lyrics box below for the actual words)",
               "sfx": "Describe the sound: e.g. retro arcade power-up chime",
               "transcribe": "Pick an audio/video file below (📝 button) - transcript will "
                             "be saved as a text file in the bin."}[kind]
@@ -398,14 +415,17 @@ class AudioPanel(QWidget):
             return
         voice = self.ai_voice.currentText().strip()
         duration = self.ai_duration.value()
+        lyrics = self.ai_lyrics.toPlainText().strip()
         meta = {"mode": kind, "model": model.id, "provider": model.provider, "prompt": text}
+        if kind == "music" and lyrics:
+            meta["lyrics"] = lyrics
 
         def work(job):
             job.progress(-1, f"{model.display}")
             if kind == "tts":
                 return adapter.tts(model.id, text, voice)
             if kind == "music":
-                return adapter.music(model.id, text, {"duration": duration},
+                return adapter.music(model.id, text, {"duration": duration, "lyrics": lyrics},
                                      progress=job.progress,
                                      should_cancel=lambda: job.cancelled)
             return adapter.sound_effect(model.id, text, {"duration": duration})

@@ -3763,6 +3763,58 @@ def test_audio_normalize_creates_undo_entry(win, monkeypatch):
         win.audio.show_clip(None)
 
 
+def test_audio_ai_music_has_a_separate_lyrics_field_and_sends_it_to_the_adapter(win):
+    """Bug fix: the AI Music tab only ever had one text box (a style/genre
+    prompt) and _ai_generate() only ever built {"duration": duration} for
+    adapter.music() - so the "lyrics" param several music models declare in
+    models.json (Suno's V5, MiniMax's music-3.0 - both read
+    params.get("lyrics") on the provider side) had no UI control that ever
+    wrote to it. Custom-lyric songs were unreachable even with a supporting
+    key configured; every call silently fell back to each provider's own
+    blank-lyrics default (instrumental for MiniMax, auto-written for Suno)."""
+    captured = {}
+
+    class FakeAdapter:
+        def music(self, model_id, prompt, params=None, progress=None, should_cancel=None):
+            captured["prompt"] = prompt
+            captured["params"] = params
+            return __file__
+
+    # AudioPanel is constructed with get_adapter captured by value (not a
+    # live win.get_adapter lookup like pipeline_orchestrator uses), so the
+    # panel's own copy must be patched directly.
+    saved_get_adapter = win.audio.get_adapter
+    win.audio.get_adapter = lambda provider: FakeAdapter()
+    try:
+        win.audio.ai_kind.setCurrentIndex(1)   # "🎵 Music"
+        assert not win.audio.ai_lyrics.isHidden()
+        idx = win.audio.ai_model.findData("minimax::music-3.0")
+        assert idx >= 0
+        win.audio.ai_model.setCurrentIndex(idx)
+        win.audio.ai_text.setPlainText("upbeat synthwave, driving bassline")
+        win.audio.ai_lyrics.setPlainText("[Verse 1]\nRiding through the neon night")
+
+        win.audio._ai_generate()
+
+        assert _wait_until(lambda: "params" in captured)
+        assert captured["prompt"] == "upbeat synthwave, driving bassline"
+        assert captured["params"]["lyrics"] == "[Verse 1]\nRiding through the neon night"
+    finally:
+        win.audio.get_adapter = saved_get_adapter
+        win.audio.ai_lyrics.clear()
+        win.audio.ai_text.clear()
+        win.audio.ai_kind.setCurrentIndex(0)
+
+
+def test_audio_ai_music_lyrics_field_hidden_for_non_music_kinds(win):
+    win.audio.ai_kind.setCurrentIndex(0)   # Speech (TTS)
+    assert win.audio.ai_lyrics.isHidden()
+    assert win.audio.ai_lyrics_label.isHidden()
+    win.audio.ai_kind.setCurrentIndex(2)   # Sound effect
+    assert win.audio.ai_lyrics.isHidden()
+    win.audio.ai_kind.setCurrentIndex(0)
+
+
 def test_effects_panel_spinbox_only_edit_creates_undo_entry(win):
     """Bug fix: _gesture_before was only primed by the slider's
     sliderPressed signal, so an edit made purely through the spinbox
