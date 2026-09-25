@@ -81,6 +81,24 @@ def test_google_image_models_flagged_with_strict_ip_policy(registry):
     assert registry.find("xai", "grok-imagine-video-1.5").strict_ip_policy is False
 
 
+def test_replicate_hosted_minimax_music_models_present_with_lyrics_param(registry):
+    """MiniMax closed its direct platform.minimax.io Music API to new
+    signups (2026-08-20) - these Replicate-hosted "Official" listings are a
+    separate commercial arrangement and unaffected. Both use a real
+    prompt+lyrics shape (unlike the pre-existing reference-audio-based
+    minimax/music-01), matching PrismCut's own Audio Lab UI."""
+    m15 = registry.find("replicate", "minimax/music-1.5")
+    m26 = registry.find("replicate", "minimax/music-2.6")
+    ace = registry.find("replicate", "fishaudio/ace-step-1.5")
+    assert m15 and "music" in m15.caps
+    assert any(p["name"] == "lyrics" for p in m15.params)
+    assert m26 and "music" in m26.caps
+    assert any(p["name"] == "lyrics" for p in m26.params)
+    assert any(p["name"] == "is_instrumental" for p in m26.params)
+    assert ace and "music" in ace.caps
+    assert {"lyrics", "duration", "bpm"} <= {p["name"] for p in ace.params}
+
+
 def test_user_overlay_roundtrip(registry):
     registry.save_user_model({"id": "my-model", "provider": "custom",
                               "label": "Mine", "caps": ["chat"], "params": []})

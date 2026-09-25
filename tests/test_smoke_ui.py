@@ -3815,6 +3815,41 @@ def test_audio_ai_music_lyrics_field_hidden_for_non_music_kinds(win):
     win.audio.ai_kind.setCurrentIndex(0)
 
 
+def test_audio_panel_music_params_omits_duration_a_model_doesnt_declare(win):
+    """Bug fix: replicate_api.py/falai.py's generic _payload() forwards
+    every params key straight into the API call verbatim - several real
+    music models (MiniMax's music-1.5/2.6 and the older music-01, all via
+    Replicate) have no duration-shaped input at all in their own schema, so
+    unconditionally sending {"duration": ...} (as _ai_generate used to)
+    would reach a model that never declared it."""
+    from prismcut.ui.panels.audio_panel import AudioPanel
+
+    model = win.registry.find("replicate", "minimax/music-1.5")
+    assert model is not None
+    params = AudioPanel._music_params(model, duration=30.0, lyrics="[Verse]\nHello")
+    assert params == {"lyrics": "[Verse]\nHello"}
+
+
+def test_audio_panel_music_params_includes_duration_when_model_declares_it(win):
+    from prismcut.ui.panels.audio_panel import AudioPanel
+
+    model = win.registry.find("replicate", "fishaudio/ace-step-1.5")
+    assert model is not None
+    params = AudioPanel._music_params(model, duration=45.0, lyrics="")
+    assert params["duration"] == 45.0
+    assert params["lyrics"] == ""
+
+
+def test_audio_panel_music_params_derives_is_instrumental_from_blank_lyrics(win):
+    from prismcut.ui.panels.audio_panel import AudioPanel
+
+    model = win.registry.find("replicate", "minimax/music-2.6")
+    assert model is not None
+    assert AudioPanel._music_params(model, duration=30.0, lyrics="")["is_instrumental"] is True
+    assert AudioPanel._music_params(
+        model, duration=30.0, lyrics="[Verse]\nHello")["is_instrumental"] is False
+
+
 def test_effects_panel_spinbox_only_edit_creates_undo_entry(win):
     """Bug fix: _gesture_before was only primed by the slider's
     sliderPressed signal, so an edit made purely through the spinbox

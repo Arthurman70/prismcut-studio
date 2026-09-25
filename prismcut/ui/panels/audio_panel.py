@@ -425,7 +425,7 @@ class AudioPanel(QWidget):
             if kind == "tts":
                 return adapter.tts(model.id, text, voice)
             if kind == "music":
-                return adapter.music(model.id, text, {"duration": duration, "lyrics": lyrics},
+                return adapter.music(model.id, text, self._music_params(model, duration, lyrics),
                                      progress=job.progress,
                                      should_cancel=lambda: job.cancelled)
             return adapter.sound_effect(model.id, text, {"duration": duration})
@@ -434,3 +434,22 @@ class AudioPanel(QWidget):
                          on_done=lambda out: (self.resultReady.emit(str(out), meta),
                                               self.status.emit(f"✓ {kind} ready")),
                          on_fail=lambda m: self.status.emit(f"✗ {kind} failed: {m}"))
+
+    @staticmethod
+    def _music_params(model, duration: float, lyrics: str) -> dict:
+        """Only forwards duration/is_instrumental to models that actually
+        declare those params (same "inspect model.params" approach
+        _fill_voices already uses for voice) - several real music models
+        (MiniMax's music-1.5/2.6 and music-01, all via Replicate) have no
+        duration-shaped input at all, and Replicate/fal's generic adapters
+        forward every params key straight into the API call verbatim, so an
+        unexpected extra field would reach a model whose own schema
+        doesn't declare it - a real latent bug for any generic-forwarding
+        provider, not just a new-model concern."""
+        names = {p.get("name") for p in model.params}
+        params = {"lyrics": lyrics}
+        if "duration" in names:
+            params["duration"] = duration
+        if "is_instrumental" in names:
+            params["is_instrumental"] = not bool(lyrics)
+        return params
