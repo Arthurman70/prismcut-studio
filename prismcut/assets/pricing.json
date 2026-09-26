@@ -67,7 +67,8 @@
 
     "replicate::google/veo-3": { "unit": "per_second", "amount": 0.75, "confidence": "low" },
     "replicate::black-forest-labs/flux-1.1-pro": { "unit": "per_image", "amount": 0.04, "confidence": "low" },
-    "replicate::minimax/music-01": { "unit": "per_generation", "amount": 0.35, "confidence": "low", "note": "Base price; scales up with output length." },
+    "replicate::minimax/music-1.5": { "unit": "per_generation", "amount": 0.03, "confidence": "high" },
+    "replicate::minimax/music-2.6": { "unit": "per_generation", "amount": 0.15, "confidence": "high" },
     "replicate::sync/lipsync-2-pro": { "unit": "per_minute", "amount": 4.50, "confidence": "low", "note": "Reported range ≈$4.00-4.98/min." },
 
     "elevenlabs::eleven_v3": { "unit": "per_1k_chars", "amount": 0.10, "confidence": "high" },

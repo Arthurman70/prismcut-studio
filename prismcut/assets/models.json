@@ -297,8 +297,6 @@
 
     { "id": "google/veo-3", "provider": "replicate", "label": "Veo 3 (via Replicate)", "caps": ["video_generate"] },
     { "id": "black-forest-labs/flux-1.1-pro", "provider": "replicate", "label": "FLUX 1.1 Pro (via Replicate)", "caps": ["image_generate"] },
-    { "id": "minimax/music-01", "provider": "replicate", "label": "MiniMax Music 01 (via Replicate)", "caps": ["music"],
-      "notes": "Reference-track based, not prompt-based: needs an existing song/voice/instrumental file to imitate rather than a free-text style description - PrismCut's Audio Lab has no UI for supplying those reference files yet, so the style prompt box is sent as-is and largely ignored by this particular model. Prefer music-1.5/2.6 below." },
     { "id": "minimax/music-1.5", "provider": "replicate", "label": "MiniMax Music 1.5 (via Replicate)", "caps": ["music"],
       "notes": "Official MiniMax listing, hosted independently by Replicate - unaffected by platform.minimax.io closing its own direct Music API to new signups (2026-08-20). Full songs up to 4 minutes; lyrics are required (10-600 chars), no instrumental mode.",
       "params": [ { "name": "lyrics", "label": "Lyrics (required by this model)", "type": "text", "default": "" } ] },

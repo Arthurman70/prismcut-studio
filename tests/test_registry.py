@@ -85,8 +85,9 @@ def test_replicate_hosted_minimax_music_models_present_with_lyrics_param(registr
     """MiniMax closed its direct platform.minimax.io Music API to new
     signups (2026-08-20) - these Replicate-hosted "Official" listings are a
     separate commercial arrangement and unaffected. Both use a real
-    prompt+lyrics shape (unlike the pre-existing reference-audio-based
-    minimax/music-01), matching PrismCut's own Audio Lab UI."""
+    prompt+lyrics shape, unlike the removed minimax/music-01 (see
+    test_minimax_music_01_removed_as_unusably_reference_audio_based below),
+    matching PrismCut's own Audio Lab UI."""
     m15 = registry.find("replicate", "minimax/music-1.5")
     m26 = registry.find("replicate", "minimax/music-2.6")
     ace = registry.find("replicate", "fishaudio/ace-step-1.5")
@@ -97,6 +98,17 @@ def test_replicate_hosted_minimax_music_models_present_with_lyrics_param(registr
     assert any(p["name"] == "is_instrumental" for p in m26.params)
     assert ace and "music" in ace.caps
     assert {"lyrics", "duration", "bpm"} <= {p["name"] for p in ace.params}
+
+
+def test_minimax_music_01_removed_as_unusably_reference_audio_based(registry):
+    """Real user-reported crash: music-01's actual Replicate schema has no
+    free-text style prompt at all - it needs an existing song/voice/
+    instrumental audio FILE to imitate, which PrismCut's Audio Lab has no
+    UI to supply. Every call through the plain prompt+lyrics UI failed with
+    Replicate error E006 ("At least one reference..."). Removed entirely
+    rather than left selectable-but-guaranteed-to-fail - confirm it stays
+    gone rather than silently reappearing in a future models.json edit."""
+    assert registry.find("replicate", "minimax/music-01") is None
 
 
 def test_user_overlay_roundtrip(registry):
