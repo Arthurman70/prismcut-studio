@@ -100,6 +100,8 @@ class FalAI(Adapter):
                        image=None, progress: Optional[ProgressFn] = None,
                        should_cancel: Optional[CancelFn] = None) -> str:
         payload = self._payload(prompt, params, image)
+        if "image-to-video" in model and not (payload.get("image_url") or payload.get("start_image_url")):
+            raise ProviderError("This image-to-video model needs a starting image. Add a reference image first.")
         result = self._run(model, payload, progress, should_cancel)
         return self._download_all(result, "fal_vid", ".mp4")[0]
 

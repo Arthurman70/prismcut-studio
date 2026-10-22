@@ -22,6 +22,15 @@ class OpenAI(OpenAICompatChat):
     def _auth(self) -> dict:
         return {"Authorization": f"Bearer {self.key()}"}
 
+    def chat(self, model, messages, system="", temperature=0.7, on_delta=None,
+             should_cancel=None, tools=None, on_tool_call=None):
+        if model.startswith(("gpt-6-", "gpt-6.")):
+            from .openai_responses import chat
+            return chat(self, model, messages, system, temperature, on_delta,
+                        should_cancel, tools, on_tool_call)
+        return super().chat(model, messages, system, temperature, on_delta,
+                            should_cancel, tools, on_tool_call)
+
     # --------------------------------------------------------------- images
     def generate_image(self, model: str, prompt: str, params: Optional[dict] = None,
                        refs: Optional[list] = None) -> list[str]:
@@ -47,6 +56,8 @@ class OpenAI(OpenAICompatChat):
         data_fields = {"model": model, "prompt": prompt, "n": str(int(params.get("n", 1)))}
         if params.get("size") and params["size"] != "auto":
             data_fields["size"] = params["size"]
+        if params.get("quality") and params["quality"] != "auto":
+            data_fields["quality"] = params["quality"]
         data = http.request_json("POST", self.base_url() + "/v1/images/edits",
                                  headers=self._auth(), data=data_fields, files=files, timeout=300)
         return self._collect_images(data, "edit")

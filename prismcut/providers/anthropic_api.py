@@ -52,6 +52,11 @@ class Anthropic(Adapter):
              on_tool_call: Optional[Callable[[ToolCall], ToolResult]] = None) -> str:
         body = {"model": model, "max_tokens": 4096, "temperature": temperature,
                 "messages": [self._payload_message(m) for m in messages]}
+        if model.startswith(("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+                             "claude-fable-5-1")):
+            body.pop("temperature")
+            body["max_tokens"] = 16384
+            body["thinking"] = {"type": "adaptive"}
         if system:
             body["system"] = system
         url = self.base_url() + "/v1/messages"

@@ -50,6 +50,8 @@ class GoogleAI(Adapter):
              on_tool_call: Optional[Callable[[ToolCall], ToolResult]] = None) -> str:
         body: dict = {"contents": self._contents(messages),
                       "generationConfig": {"temperature": temperature}}
+        if model.startswith("gemini-4-"):
+            body["generationConfig"] = {}
         if system:
             body["system_instruction"] = {"parts": [{"text": system}]}
 
@@ -231,7 +233,12 @@ class GoogleAI(Adapter):
                 if blob and blob.get("data"):
                     pcm = base64.b64decode(blob["data"])
                     out = self._out("tts", ".wav")
-                    media.pcm_to_wav(pcm, out, rate=24000)
+                    # Gemini 3.8 TTS returns a WAV container by default;
+                    # earlier TTS models return raw PCM. Never double-wrap it.
+                    if pcm[:4] == b"RIFF" and pcm[8:12] == b"WAVE":
+                        out.write_bytes(pcm)
+                    else:
+                        media.pcm_to_wav(pcm, out, rate=24000)
                     return str(out)
         raise ProviderError(f"Gemini TTS returned no audio: {str(data)[:300]}")
 

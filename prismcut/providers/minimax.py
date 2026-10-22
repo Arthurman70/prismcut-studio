@@ -21,6 +21,16 @@ class MiniMax(OpenAICompatChat):
     label = "MiniMax (Hailuo)"
     chat_path = "/v1/text/chatcompletion_v2"
 
+    def _chat_url(self, model):
+        if model.startswith("MiniMax-M3"):
+            return self.base_url() + "/v1/chat/completions"
+        return super()._chat_url(model)
+
+    def _chat_options(self, model, temperature):
+        if model.startswith("MiniMax-M3"):
+            return {"reasoning_effort": "medium"} if model.startswith("MiniMax-M3.1") else {}
+        return super()._chat_options(model, temperature)
+
     def _auth(self) -> dict:
         return {"Authorization": f"Bearer {self.key()}", "Content-Type": "application/json"}
 

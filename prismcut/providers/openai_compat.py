@@ -20,6 +20,12 @@ class OpenAICompatChat(Adapter):
     def _chat_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.key()}", "Content-Type": "application/json"}
 
+    def _chat_url(self, model):
+        return self.base_url() + self.chat_path
+
+    def _chat_options(self, model, temperature):
+        return {"temperature": temperature}
+
     def _content_for(self, msg: ChatMessage):
         if not msg.attachments:
             return msg.text
@@ -61,13 +67,13 @@ class OpenAICompatChat(Adapter):
              should_cancel: Optional[CancelFn] = None,
              tools: Optional[list[Tool]] = None,
              on_tool_call: Optional[Callable[[ToolCall], ToolResult]] = None) -> str:
-        url = self.base_url() + self.chat_path
+        url = self._chat_url(model)
         payload_msgs = []
         if system:
             payload_msgs.append({"role": "system", "content": system})
         for m in messages:
             payload_msgs.append(self._payload_message(m))
-        body = {"model": model, "messages": payload_msgs, "temperature": temperature}
+        body = {"model": model, "messages": payload_msgs, **self._chat_options(model, temperature)}
 
         if tools and on_tool_call:
             body["tools"] = [{"type": "function",
@@ -85,8 +91,8 @@ class OpenAICompatChat(Adapter):
                     if isinstance(text, list):
                         text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
                     return text or ""
-                payload_msgs.append({"role": "assistant", "content": msg.get("content"),
-                                     "tool_calls": raw_calls})
+                # Preserve provider-owned reasoning fields during the tool loop.
+                payload_msgs.append({**msg, "role": "assistant"})
                 for rc in raw_calls:
                     try:
                         args = json.loads(rc["function"]["arguments"] or "{}")

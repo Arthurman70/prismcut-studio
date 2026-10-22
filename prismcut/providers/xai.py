@@ -9,7 +9,7 @@ import base64
 from typing import Optional
 
 from ..core import http
-from ..core.http import ProviderError
+from ..core.http import ProviderError, NotSupported
 from .base import CancelFn, ProgressFn
 from .openai_compat import OpenAICompatChat
 
@@ -23,17 +23,47 @@ class XAI(OpenAICompatChat):
 
     def generate_image(self, model: str, prompt: str, params: Optional[dict] = None,
                        refs: Optional[list] = None) -> list[str]:
+        if refs:
+            if len(refs) != 1:
+                raise NotSupported("Grok editing currently takes one reference image in PrismCut.")
+            return self.edit_image(model, prompt, refs[0], params=params)
         params = params or {}
         body = {"model": model, "prompt": prompt, "n": int(params.get("n", 1)),
                 "response_format": "b64_json"}
+        for key in ("quality", "aspect_ratio", "resolution"):
+            if params.get(key):
+                body[key] = params[key]
         data = http.request_json("POST", self.base_url() + "/v1/images/generations",
                                  headers=self._auth(), json_body=body, timeout=300)
+        return self._collect_images(data)
+
+    def edit_image(self, model, prompt, image, mask=None, params=None):
+        if mask is not None:
+            raise NotSupported("Grok Image uses prompt-based whole-image edits. Clear the mask first.")
+        params = params or {}
+        body = {"model": model, "prompt": prompt, "n": int(params.get("n", 1)),
+                "response_format": "b64_json", "image": {"type": "image_url", "url": http.data_uri(image)}}
+        for key in ("quality", "aspect_ratio", "resolution"):
+            if params.get(key):
+                body[key] = params[key]
+        data = http.request_json("POST", self.base_url() + "/v1/images/edits",
+                                 headers=self._auth(), json_body=body, timeout=300)
+        return self._collect_images(data)
+
+    def _collect_images(self, data):
         outs = []
         for item in data.get("data", []):
             if item.get("b64_json"):
-                outs.append(self._save_bytes(base64.b64decode(item["b64_json"]), "grok", ".png"))
+                raw = base64.b64decode(item["b64_json"])
+                # Imagine 2 returns JPEG. Keep the real file type so later
+                # attachments do not label JPEG bytes as image/png.
+                ext = ".jpg" if raw.startswith(b"\xff\xd8\xff") else ".png"
+                if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+                    ext = ".webp"
+                outs.append(self._save_bytes(raw, "grok", ext))
             elif item.get("url"):
-                out = self._out("grok", ".png")
+                ext = {"image/png": ".png", "image/webp": ".webp"}.get(item.get("mime_type"), ".jpg")
+                out = self._out("grok", ext)
                 http.download(item["url"], out)
                 outs.append(str(out))
         if not outs:

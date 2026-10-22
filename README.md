@@ -5,7 +5,7 @@
 A native desktop app (Qt, ships as a Windows `.exe`) that fuses a
 Kdenlive-style editing workflow with the latest generative AI APIs: chat with
 any model, generate and edit images with one-click **Nano Banana** tools, render
-video with **Veo 3.1 / Sora 2 / Grok Imagine / Hailuo 03 / Seedance 2.0**, and
+video with **Veo / Sora / Grok Imagine / Hailuo / Seedance / Kling / Wan / LTX**, and
 score it with **ElevenLabs / MiniMax / Suno** music — all from a multi-track
 timeline with audio mixing and ffmpeg export.
 
@@ -35,14 +35,15 @@ timeline with audio mixing and ffmpeg export.
 - **AI Chat**: full chat panel with a model toggle populated from every configured provider, streaming responses, system prompt + temperature, saved conversations, and image/audio/video attachments encoded correctly per provider
 - **Audio Lab**: mixer (faders/pan/mute/solo), waveforms, normalize, fades, plus AI TTS voices, music generation, sound effects and transcription straight into the bin
 
-**Provider adapters (13 + custom)**
+**Provider adapters (14 + custom)**
 
 | Provider | Chat | Image gen | Image edit | Video | TTS | Music | SFX | STT |
 |---|---|---|---|---|---|---|---|---|
 | Google AI (Gemini · Nano Banana · Veo) | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ |
 | OpenAI (GPT · gpt-image · Sora 2) | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ |
 | Anthropic Claude | ✅ | — | — | — | — | — | — | — |
-| xAI (Grok · Grok Imagine) | ✅ | ✅ | — | ✅ | — | — | — | — |
+| Meta (Muse) | ✅ | ✅ | ✅ | — | — | — | — | ✅ |
+| xAI (Grok · Grok Imagine) | ✅ | ✅ | ✅ | ✅ | — | — | — | — |
 | DeepSeek | ✅ | — | — | — | — | — | — | — |
 | MiniMax (Hailuo 03 "H3" · Music · Speech) | ✅ | — | — | ✅ | ✅ | ✅ | — | — |
 | Seedance 2.0 (BytePlus Ark) | — | — | — | ✅ | — | — | — | — |
@@ -54,12 +55,18 @@ timeline with audio mixing and ffmpeg export.
 | Suno (community gateway, experimental) | — | — | — | — | — | ✅ | — | — |
 | Custom OpenAI-compatible (OpenRouter, Groq, Ollama…) | ✅ | — | — | — | — | — | — | — |
 
-Model IDs are **data, not code**: `prismcut/assets/models.json` ships verified
-defaults (Aug 2026 — Gemini 3.x, Nano Banana 2/Pro, Veo 3.1, GPT-5.6, Sora 2,
-Grok Imagine Video 1.5, MiniMax-H3, Seedance 2.0, FLUX 2…) and the in-app
-**Model Manager** adds/overrides models the day new ones launch. *"Omni Flash"*-
-style fast multimodal models are covered by the Gemini Flash family and the
-GPT omni line; anything else is one Model Manager entry away.
+The October 22, 2026 update adds **36 model entries**, for **98 bundled models**.
+These include Meta Muse, GPT-6 and GPT Image 2.5, Claude 5.5 / Fable,
+Gemini 4 Argon / 3.8 Flash / Nano Banana 2.1, MiniMax M3 / Speech 2.8,
+Grok 4.7 / Imagine Image 2.0, and fal-hosted Kling 3 / Seedance 2.5 / Wan 3 / LTX 2.5.
+See [the model update notes](docs/model-update-20261022.md) for capabilities,
+account requirements, sources and validation limits.
+
+Model IDs and parameter presets live in `prismcut/assets/models.json`.
+**AI ▸ Model Manager** now includes search by model, provider or capability,
+and still supports custom entries and endpoint overrides. New IDs using an
+existing API contract can be added without rebuilding; new API formats need
+an adapter update. Existing choices and user overrides are retained.
 
 ---
 
@@ -82,7 +89,7 @@ Open **AI ▸ API Keys…** (Ctrl+K). Each provider row links to its key page �
 paste the key, hit *Test*, done. Any subset works; panels only list models
 whose capability exists, marking keyed providers with 🔑. Environment
 variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`,
-`MINIMAX_API_KEY`, `FAL_KEY`, …) override stored keys.
+`MODEL_API_KEY` (Meta Muse), `MINIMAX_API_KEY`, `FAL_KEY`, …) override stored keys.
 
 > 🔒 Keys are stored locally (OS keyring when available, else app settings,
 > obfuscated not encrypted) and are only ever sent to that provider's own API.

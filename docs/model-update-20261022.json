@@ -1,0 +1,221 @@
+{
+  "verified": "2026-10-22",
+  "models": [
+    {
+      "provider": "meta",
+      "id": "muse-spark-1.3",
+      "source": "https://dev.meta.ai/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "meta",
+      "id": "muse-spark-1.2",
+      "source": "https://dev.meta.ai/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "meta",
+      "id": "muse-spark-1.1",
+      "source": "https://dev.meta.ai/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "meta",
+      "id": "muse-wonder-1.0",
+      "source": "https://dev.meta.ai/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "meta",
+      "id": "muse-image-1.0",
+      "source": "https://dev.meta.ai/docs/api-reference/images/schemas",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "meta",
+      "id": "muse-voice-transcribe-1.0",
+      "source": "https://dev.meta.ai/docs/speech-to-text",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6-astra",
+      "source": "https://developers.openai.com/api/docs/guides/latest-model",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6.1-sol",
+      "source": "https://developers.openai.com/api/docs/guides/latest-model",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6-luna",
+      "source": "https://developers.openai.com/api/docs/guides/latest-model",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-image-2.5-sunburst",
+      "source": "https://developers.openai.com/api/docs/guides/image-generation",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-image-2.5-flare",
+      "source": "https://developers.openai.com/api/docs/guides/image-generation",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-5-5",
+      "source": "https://platform.claude.com/docs/en/models/overview",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-5-5",
+      "source": "https://platform.claude.com/docs/en/models/overview",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-haiku-5-5",
+      "source": "https://platform.claude.com/docs/en/models/overview",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-fable-5-1",
+      "source": "https://platform.claude.com/docs/en/models/overview",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "google",
+      "id": "gemini-4-argon",
+      "source": "https://ai.google.dev/gemini-api/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "google",
+      "id": "gemini-3.8-flash",
+      "source": "https://ai.google.dev/gemini-api/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "google",
+      "id": "gemini-nano-banana-2.1",
+      "source": "https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "google",
+      "id": "gemini-3.8-flash-tts",
+      "source": "https://ai.google.dev/gemini-api/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "google",
+      "id": "gemini-3.8-flash-lite-tts",
+      "source": "https://ai.google.dev/gemini-api/docs/models",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "minimax",
+      "id": "MiniMax-M3.1-Flash",
+      "source": "https://platform.minimax.io/docs/api-reference/text-openai-api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "minimax",
+      "id": "MiniMax-M3",
+      "source": "https://platform.minimax.io/docs/api-reference/text-openai-api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "minimax",
+      "id": "speech-2.8-hd",
+      "source": "https://platform.minimax.io/docs/guides/models-intro",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "minimax",
+      "id": "speech-2.8-turbo",
+      "source": "https://platform.minimax.io/docs/guides/models-intro",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "xai",
+      "id": "grok-4.7",
+      "source": "https://docs.x.ai/developers/grok-4-7",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "xai",
+      "id": "grok-imagine-image-2.0",
+      "source": "https://docs.x.ai/developers/migration/imagine-image-quality-nov-2",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "fal-ai/kling-video/v3/pro/text-to-video",
+      "source": "https://fal.ai/models/fal-ai/kling-video/v3/pro/text-to-video/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "bytedance/seedance-2.5/text-to-video",
+      "source": "https://fal.ai/models/bytedance/seedance-2.5/text-to-video/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "alibaba/wan-3.0/text-to-video",
+      "source": "https://fal.ai/models/alibaba/wan-3.0/text-to-video/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "lightricks/ltx-2.5/text-to-video/pro",
+      "source": "https://fal.ai/models/lightricks/ltx-2.5/text-to-video/pro/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "lightricks/ltx-2.5/text-to-video/fast",
+      "source": "https://fal.ai/models/lightricks/ltx-2.5/text-to-video/fast/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "fal-ai/kling-video/v3/pro/image-to-video",
+      "source": "https://fal.ai/models/fal-ai/kling-video/v3/pro/image-to-video/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "bytedance/seedance-2.5/image-to-video",
+      "source": "https://fal.ai/models/bytedance/seedance-2.5/image-to-video/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "alibaba/wan-3.0/image-to-video",
+      "source": "https://fal.ai/models/alibaba/wan-3.0/image-to-video/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "lightricks/ltx-2.5/image-to-video/pro",
+      "source": "https://fal.ai/models/lightricks/ltx-2.5/image-to-video/pro/api",
+      "verified": "2026-10-22"
+    },
+    {
+      "provider": "fal",
+      "id": "lightricks/ltx-2.5/image-to-video/fast",
+      "source": "https://fal.ai/models/lightricks/ltx-2.5/image-to-video/fast/api",
+      "verified": "2026-10-22"
+    }
+  ]
+}

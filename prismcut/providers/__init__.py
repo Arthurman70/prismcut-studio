@@ -24,8 +24,9 @@ def _load() -> None:
     from .elevenlabs import ElevenLabs
     from .suno import Suno
     from .custom_openai import CustomOpenAI
+    from .meta import Meta
     for cls in (GoogleAI, OpenAI, Anthropic, XAI, DeepSeek, MiniMax, Seedance,
-                Stability, BFL, FalAI, Replicate, ElevenLabs, Suno, CustomOpenAI):
+                Stability, BFL, FalAI, Replicate, ElevenLabs, Suno, CustomOpenAI, Meta):
         _ADAPTERS[cls.name] = cls
 
 

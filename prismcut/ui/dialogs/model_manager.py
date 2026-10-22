@@ -99,9 +99,13 @@ class ModelManagerDialog(QDialog):
         self.setWindowTitle("Model Manager")
         self.resize(780, 560)
         lay = QVBoxLayout(self)
-        lay.addWidget(label("The registry ships with sane defaults (verified Aug 2026) "
-                            "but model IDs churn - add new ones here the day they launch. "
+        lay.addWidget(label("The registry includes the October 2026 model update. "
+                            "Account access varies by provider; add custom models here. "
                             "Custom entries live in models.user.json.", dim=True))
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Find a model, provider or capability (e.g. Muse, video, transcribe)…")
+        self.search.textChanged.connect(self._filter)
+        lay.addWidget(self.search)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Model", "Capabilities", "Notes"])
         self.tree.setColumnWidth(0, 330)
@@ -151,12 +155,28 @@ class ModelManagerDialog(QDialog):
             node = QTreeWidgetItem([f"{m.display}{suffix}", ", ".join(m.caps), m.notes[:80]])
             node.setData(0, Qt.ItemDataRole.UserRole, m.key)
             node.setToolTip(0, m.id)
+            node.setToolTip(2, m.notes)
             if hidden:
                 node.setForeground(0, Qt.GlobalColor.darkGray)
             parent = by_provider.get(m.provider)
             if parent:
                 parent.addChild(node)
         self.tree.expandAll()
+        self._filter()
+
+    def _filter(self):
+        query = self.search.text().strip().casefold()
+        for i in range(self.tree.topLevelItemCount()):
+            parent = self.tree.topLevelItem(i)
+            visible = False
+            for j in range(parent.childCount()):
+                node = parent.child(j)
+                haystack = ' '.join([parent.text(0), node.text(0), node.text(1),
+                                     node.toolTip(0), node.toolTip(2)]).casefold()
+                match = not query or query in haystack
+                node.setHidden(not match)
+                visible |= match
+            parent.setHidden(not visible)
 
     def _selected(self):
         it = self.tree.currentItem()
