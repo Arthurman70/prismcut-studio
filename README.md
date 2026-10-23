@@ -1,4 +1,12 @@
-# PrismCut Studio
+# PrismCut Studio — AI Photo, Video and Audio Editor
+
+[![Download Windows installer v1.8.3](https://img.shields.io/badge/Download%20Windows%20installer%20v1.8.3-2563eb?style=for-the-badge)](https://github.com/Arthurman70/prismcut-studio/releases/download/v1.8.3/PrismCut-Studio-Setup-1.8.3.exe) [![Portable Windows ZIP](https://img.shields.io/badge/Portable%20Windows%20ZIP-475569?style=for-the-badge)](https://github.com/Arthurman70/prismcut-studio/releases/download/v1.8.3/PrismCut-windows-x64.zip)
+
+[Product downloads](https://github.com/Arthurman70/prismcut-studio/releases) · [Screenshots](#screenshots) · [Source setup](#quick-start-from-source) · [FAQ](#frequently-asked-questions)
+
+**Choose your version:** the published Windows packages are **v1.8.3**. The **1.9.0 source update**, including Muse, is on `main`; it has not yet been published as a GitHub installer. Provider API access and usage charges are separate from the app.
+
+**Downloads and setup:** [Download Windows installer v1.8.3](https://github.com/Arthurman70/prismcut-studio/releases/download/v1.8.3/PrismCut-Studio-Setup-1.8.3.exe) · [Portable Windows ZIP](https://github.com/Arthurman70/prismcut-studio/releases/download/v1.8.3/PrismCut-windows-x64.zip)
 
 **Open-source AI photo, video & audio studio — bring your own API keys.**
 
@@ -9,7 +17,9 @@ video with **Veo / Sora / Grok Imagine / Hailuo / Seedance / Kling / Wan / LTX**
 score it with **ElevenLabs / MiniMax / Suno** music — all from a multi-track
 timeline with audio mixing and ffmpeg export.
 
-![Edit view](docs/screenshots/edit.png)
+## Screenshots
+
+![PrismCut multitrack video editing workspace](docs/screenshots/edit.png)
 ![Photo Studio](docs/screenshots/photo_studio.png)
 ![AI chat + generate](docs/screenshots/ai_panels.png)
 
@@ -102,7 +112,7 @@ variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`,
 ## Windows .exe
 
 **Download:** grab `PrismCut-Studio-Setup-<version>.exe` from
-[Releases](../../releases) for a proper installer — Start Menu shortcut,
+[Releases](https://github.com/Arthurman70/prismcut-studio/releases) for a proper installer — Start Menu shortcut,
 optional desktop icon, and a clean uninstall via *Apps & Features*. It
 installs per-user, so no admin rights or UAC prompt are needed. A portable
 `PrismCut-windows-x64.zip` (just unzip and run) is attached to the same
@@ -167,3 +177,47 @@ Provider adapters are ~100 lines each; adding one is a great first PR.
 [MIT](LICENSE). Kdenlive inspired the layout but no GPL code is used.
 You pay AI providers directly at their rates; generated content is subject to
 each provider's terms.
+
+## Frequently asked questions
+
+Answers describe this repository and its documented scope as of **October 23, 2026**.
+
+### What is PrismCut Studio, and what can I make with it?
+
+PrismCut Studio is a desktop photo, video and audio editor with optional AI tools. Combine clips on a multitrack timeline, edit photos, generate media through supported providers, and export finished work with FFmpeg. See the [feature list](#features) for the current editing and generation tools.
+
+### Is PrismCut Studio free, or do I need an AI subscription?
+
+The PrismCut application is MIT licensed. AI generation uses your own provider API keys, and those providers set their own pricing, access rules and quotas. An existing consumer chatbot subscription does not necessarily include API access. You can use the editing tools without configuring every provider.
+
+### Where can I download the PrismCut Windows installer?
+
+Use the Windows download button above or the [published releases](https://github.com/Arthurman70/prismcut-studio/releases). Choose the setup EXE for installation or the portable ZIP to unzip and run. The published installer is v1.8.3; the main branch contains the newer 1.9.0 model update. These are different versions.
+
+### Does PrismCut support Meta Muse models?
+
+The 1.9.0 source update includes a Meta adapter and Muse model entries. Configure the Meta key in **AI → API Keys**, or use `MODEL_API_KEY`. Available capabilities and model access depend on your provider account. See the [dated model update notes](docs/model-update-20261022.md), including their validation limits; the v1.8.3 download predates this update.
+
+### Can I use Gemini, OpenAI, Claude, Grok and other providers in one app?
+
+Yes. PrismCut includes separate provider adapters and a capability-based model picker. Providers support different combinations of chat, images, video, speech and music. The [provider table](#features) and [provider guide](PROVIDERS.md) explain those differences; adding an API key does not make every provider support every media type.
+
+### Can I connect Ollama or another OpenAI-compatible endpoint?
+
+The custom OpenAI-compatible adapter supports chat endpoints such as a locally configured Ollama service. Set the endpoint and model in PrismCut. This is chat integration; it does not automatically give the endpoint image, video or speech generation capabilities.
+
+### Can I edit and export video without sending it to an AI provider?
+
+Local editing and FFmpeg export do not require an AI generation request. When you choose an AI operation, its prompt and required media are sent to the selected provider or configured endpoint. Automatic GitHub update checks can be disabled in **Help → Check for Updates**.
+
+### Does PrismCut run on macOS or Linux?
+
+The published desktop packages target Windows x64. A Python source setup is documented, but dedicated macOS and Linux packages remain on the roadmap. Do not assume that a Windows release provides a supported installer for those platforms.
+
+### Why are export or audio waveforms unavailable?
+
+PrismCut requires FFmpeg on your system PATH for export and waveforms. Install FFmpeg, then restart the app so it can detect the executable. The [source quick start](#quick-start-from-source) lists the requirement and a Windows installation example.
+
+### How do I add a model or report a problem?
+
+Use **AI → Model Manager** for model entries and endpoint overrides. A new provider API format may require an adapter change. For bugs, [open an issue](https://github.com/Arthurman70/prismcut-studio/issues) with your app version, operating system, provider and reproduction steps. Remove API keys and private media before attaching logs.
